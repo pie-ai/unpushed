@@ -17,8 +17,16 @@ pub enum View {
     All,
 }
 
-/// What a row is currently busy with, so the UI can show it and key handling
-/// can refuse to start the same work twice.
+/// Which kinds of work are running on a row. Several can be true at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Busy {
+    scanning: bool,
+    fetching: bool,
+    pushing: bool,
+}
+
+/// What a row is currently busy with, as shown to the user. Derived from
+/// [`Busy`] by picking the most consequential of the running kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {
     Idle,
@@ -104,7 +112,11 @@ pub struct Row {
     pub repo: Repo,
     pub outcome: Option<ScanOutcome>,
     pub marked: bool,
-    pub activity: Activity,
+    /// One flag per kind of work, because a row can be doing several at once:
+    /// startup schedules a scan *and* a fetch for every repository. A single
+    /// field would let the first result to land clear the other one, and the
+    /// row would look idle while a fetch was still running.
+    busy: Busy,
     /// Result of the last action on this row, shown until something replaces it.
     pub note: Option<Message>,
     /// Whether this repository has been fetched during this session.
@@ -117,9 +129,34 @@ impl Row {
             repo,
             outcome: None,
             marked: false,
-            activity: Activity::Scanning,
+            busy: Busy::default(),
             note: None,
             fetched: false,
+        }
+    }
+
+    /// The kind of work shown for this row. Pushing outranks fetching, which
+    /// outranks reading: the user cares most about the one with consequences.
+    pub fn activity(&self) -> Activity {
+        if self.busy.pushing {
+            Activity::Pushing
+        } else if self.busy.fetching {
+            Activity::Fetching
+        } else if self.busy.scanning {
+            Activity::Scanning
+        } else {
+            Activity::Idle
+        }
+    }
+
+    /// Marks a kind of work as running or finished. Public so integration
+    /// tests can put a row into a given state without driving real jobs.
+    pub fn set_busy(&mut self, activity: Activity, running: bool) {
+        match activity {
+            Activity::Scanning => self.busy.scanning = running,
+            Activity::Fetching => self.busy.fetching = running,
+            Activity::Pushing => self.busy.pushing = running,
+            Activity::Idle => self.busy = Busy::default(),
         }
     }
 
@@ -158,7 +195,15 @@ pub struct App {
     pub base: String,
     /// Number of background fetches still running, for the header.
     pub fetching: usize,
+    /// Advances on a timer so busy rows can animate. Nothing else depends on
+    /// it, so wrapping is harmless.
+    tick: u64,
 }
+
+/// Frames for the busy indicator. Ten of them at the 100 ms tick make one
+/// turn per second — fast enough to read as "working", slow enough not to
+/// flicker.
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 impl App {
     pub fn new(base: String, repos: Vec<Repo>) -> Self {
@@ -171,7 +216,19 @@ impl App {
             message: None,
             base,
             fetching: 0,
+            tick: 0,
         }
+    }
+
+    /// Advances the busy animation. Driven by the event loop on a timer rather
+    /// than per redraw, so holding a key down does not freeze the spinner.
+    pub fn tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+
+    /// Current frame of the busy indicator.
+    pub fn spinner(&self) -> char {
+        SPINNER[(self.tick % SPINNER.len() as u64) as usize]
     }
 
     /// Jobs to run at startup: scan everything, then fetch everything.
@@ -231,13 +288,13 @@ impl App {
             JobResult::Scanned { index, outcome } => {
                 if let Some(row) = self.rows.get_mut(index) {
                     row.outcome = Some(*outcome);
-                    row.activity = Activity::Idle;
+                    row.set_busy(Activity::Scanning, false);
                 }
             }
             JobResult::Fetched { index, result } => {
                 self.fetching = self.fetching.saturating_sub(1);
                 if let Some(row) = self.rows.get_mut(index) {
-                    row.activity = Activity::Idle;
+                    row.set_busy(Activity::Fetching, false);
                     match result {
                         Ok(()) => {
                             row.fetched = true;
@@ -254,7 +311,7 @@ impl App {
             }
             JobResult::Pushed { index, outcome } => {
                 if let Some(row) = self.rows.get_mut(index) {
-                    row.activity = Activity::Idle;
+                    row.set_busy(Activity::Pushing, false);
                     row.marked = false;
                     row.note = Some(describe_push(&outcome));
                 }
@@ -271,7 +328,7 @@ impl App {
             Job::Push { index, .. } => (*index, Activity::Pushing),
         };
         if let Some(row) = self.rows.get_mut(index) {
-            row.activity = activity;
+            row.set_busy(activity, true);
         }
     }
 
@@ -315,7 +372,10 @@ impl App {
 
     fn key_in_confirm(&mut self, key: Key, confirm: Confirm) -> Action {
         match key {
-            Key::Char('y') | Key::Char('j') | Key::Enter => {
+            // Deliberately only `y`. Enter is the main action key in the list,
+            // so accepting it here would turn a habitual keypress into consent
+            // for a bulk push. `j` is "down" everywhere else.
+            Key::Char('y') => {
                 self.begin(&confirm.jobs);
                 Action::Start(confirm.jobs)
             }
@@ -382,17 +442,17 @@ impl App {
                 Action::None
             }
             Key::Char('r') => self.start_on_selected(Job::Scan),
-            Key::Char('R') => {
-                let jobs: Vec<Job> = self.visible().into_iter().map(Job::Scan).collect();
-                self.start(jobs)
-            }
+            Key::Char('R') => self.start_bulk(Job::Scan, "read"),
             Key::Char('f') => self.start_on_selected(Job::Fetch),
-            Key::Char('F') => {
-                let jobs: Vec<Job> = self.visible().into_iter().map(Job::Fetch).collect();
-                self.start(jobs)
-            }
-            Key::Char('g') => match self.selected() {
-                Some(index) => Action::OpenGitui(index),
+            Key::Char('F') => self.start_bulk(Job::Fetch, "fetch"),
+            // Enter is the primary way in — it matches the muscle memory of
+            // drilling into a repository in gitui itself. `g` stays as a
+            // second binding.
+            Key::Enter | Key::Char('g') => match self.selected() {
+                Some(index) => match self.require_idle(index) {
+                    Ok(()) => Action::OpenGitui(index),
+                    Err(reason) => self.warn(&reason),
+                },
                 None => self.warn("No row selected."),
             },
             // A single push is immediate: it affects one named repository the
@@ -422,15 +482,29 @@ impl App {
         }
     }
 
+    /// Refuses anything that touches a repository while work is already running
+    /// on it. A fetch during a push would move the refs out from under it, and
+    /// the outcome of that is not worth reasoning about.
+    fn require_idle(&self, index: usize) -> Result<(), String> {
+        let row = self
+            .rows
+            .get(index)
+            .ok_or_else(|| "Row does not exist.".to_string())?;
+        match row.activity() {
+            Activity::Idle => Ok(()),
+            Activity::Scanning => Err(format!("{} is being read.", row.repo.name)),
+            Activity::Fetching => Err(format!("{} is fetching.", row.repo.name)),
+            Activity::Pushing => Err(format!("{} is pushing.", row.repo.name)),
+        }
+    }
+
     fn push_job(&self, index: usize) -> Result<Job, String> {
+        self.require_idle(index)?;
         let row = self
             .rows
             .get(index)
             .ok_or_else(|| "Row does not exist.".to_string())?;
 
-        if row.activity != Activity::Idle {
-            return Err(format!("{} is busy.", row.repo.name));
-        }
         match &row.outcome {
             None => Err(format!("{} has not been read yet.", row.repo.name)),
             Some(ScanOutcome::Failed(_)) => Err(format!("{}: scan failed.", row.repo.name)),
@@ -475,9 +549,42 @@ impl App {
 
     fn start_on_selected(&mut self, make: fn(usize) -> Job) -> Action {
         match self.selected() {
-            Some(index) => self.start(vec![make(index)]),
+            Some(index) => match self.require_idle(index) {
+                Ok(()) => self.start(vec![make(index)]),
+                Err(reason) => self.warn(&reason),
+            },
             None => self.warn("No row selected."),
         }
+    }
+
+    /// Indices of visible rows that are free to take work, for the bulk keys.
+    /// Busy rows are skipped rather than failing the whole action.
+    fn idle_visible(&self) -> (Vec<usize>, usize) {
+        let visible = self.visible();
+        let total = visible.len();
+        let idle: Vec<usize> = visible
+            .into_iter()
+            .filter(|&index| self.require_idle(index).is_ok())
+            .collect();
+        let skipped = total - idle.len();
+        (idle, skipped)
+    }
+
+    fn start_bulk(&mut self, make: fn(usize) -> Job, what: &str) -> Action {
+        let (targets, skipped) = self.idle_visible();
+        if targets.is_empty() {
+            return self.warn(&format!("No rows available to {what}."));
+        }
+        let jobs: Vec<Job> = targets.into_iter().map(make).collect();
+        let started = jobs.len();
+        let action = self.start(jobs);
+        if skipped > 0 {
+            self.message = Some(Message {
+                level: Level::Info,
+                text: format!("{what}: {started} started, {skipped} busy and skipped."),
+            });
+        }
+        action
     }
 
     fn start(&mut self, jobs: Vec<Job>) -> Action {
@@ -723,7 +830,7 @@ mod tests {
                 branch: "feature/login".into()
             }])
         );
-        assert_eq!(app.rows[0].activity, Activity::Pushing);
+        assert_eq!(app.rows[0].activity(), Activity::Pushing);
     }
 
     #[test]
@@ -769,7 +876,7 @@ mod tests {
         let action = app.on_key(Key::Char('n'));
         assert_eq!(action, Action::None);
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.rows.iter().all(|r| r.activity == Activity::Idle));
+        assert!(app.rows.iter().all(|r| r.activity() == Activity::Idle));
     }
 
     #[test]
@@ -802,7 +909,7 @@ mod tests {
         app.on_key(Key::Char('p'));
         let action = app.on_key(Key::Char('p'));
         assert_eq!(action, Action::None);
-        assert!(app.message.as_ref().unwrap().text.contains("is busy"));
+        assert!(app.message.as_ref().unwrap().text.contains("is pushing"));
     }
 
     #[test]
@@ -814,7 +921,7 @@ mod tests {
             outcome: PushOutcome::Pushed { created: true },
         });
         assert!(!app.rows[0].marked);
-        assert_eq!(app.rows[0].activity, Activity::Idle);
+        assert_eq!(app.rows[0].activity(), Activity::Idle);
         assert!(app.rows[0]
             .note
             .as_ref()
@@ -848,6 +955,46 @@ mod tests {
         assert!(app.rows[0].fetched);
     }
 
+    /// Startup schedules a scan *and* a fetch for every row. The scan finishes
+    /// first, and with a single activity field it used to clear the fetch state
+    /// too — the row looked idle while the fetch was still running, so no
+    /// spinner appeared and nothing stopped a second action.
+    #[test]
+    fn a_finished_scan_does_not_clear_a_running_fetch() {
+        let mut app = App::new("/tmp".into(), vec![repo("a")]);
+        app.startup_jobs();
+        assert_eq!(app.rows[0].activity(), Activity::Fetching);
+
+        app.apply(JobResult::Scanned {
+            index: 0,
+            outcome: Box::new(status("a", "main", 0, false)),
+        });
+        assert_eq!(
+            app.rows[0].activity(),
+            Activity::Fetching,
+            "the fetch is still running"
+        );
+        assert!(app.require_idle(0).is_err(), "row must stay locked");
+
+        app.apply(JobResult::Fetched {
+            index: 0,
+            result: Ok(()),
+        });
+        assert_eq!(app.rows[0].activity(), Activity::Idle);
+    }
+
+    /// A push outranks a background fetch in what the row reports.
+    #[test]
+    fn the_most_consequential_kind_of_work_is_shown() {
+        let mut app = app();
+        app.rows[0].set_busy(Activity::Fetching, true);
+        assert_eq!(app.rows[0].activity(), Activity::Fetching);
+        app.rows[0].set_busy(Activity::Pushing, true);
+        assert_eq!(app.rows[0].activity(), Activity::Pushing);
+        app.rows[0].set_busy(Activity::Pushing, false);
+        assert_eq!(app.rows[0].activity(), Activity::Fetching);
+    }
+
     #[test]
     fn a_failed_fetch_is_noted_on_the_row() {
         let mut app = app();
@@ -863,6 +1010,108 @@ mod tests {
     fn gitui_is_requested_for_the_selected_row() {
         let mut app = app();
         assert_eq!(app.on_key(Key::Char('g')), Action::OpenGitui(0));
+    }
+
+    /// Enter is the binding the hand reaches for; `g` stays as a second one.
+    #[test]
+    fn enter_opens_gitui_just_like_g() {
+        let mut app = app();
+        assert_eq!(app.on_key(Key::Enter), Action::OpenGitui(0));
+        assert_eq!(app.on_key(Key::Char('g')), Action::OpenGitui(0));
+    }
+
+    /// Enter is the main action key in the list, so it must not double as
+    /// consent in the confirmation dialog.
+    #[test]
+    fn enter_does_not_confirm_a_bulk_push() {
+        let mut app = app();
+        app.on_key(Key::Char('A'));
+        assert_eq!(app.on_key(Key::Enter), Action::None);
+        assert!(
+            matches!(app.mode, Mode::Confirm(_)),
+            "dialog must stay open"
+        );
+
+        match app.on_key(Key::Char('y')) {
+            Action::Start(jobs) => assert_eq!(jobs.len(), 2),
+            other => panic!("expected Start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_action_on_a_busy_row_is_refused() {
+        for key in [
+            Key::Char('p'),
+            Key::Char('f'),
+            Key::Char('r'),
+            Key::Enter,
+            Key::Char('g'),
+        ] {
+            let mut app = app();
+            app.rows[0].set_busy(Activity::Pushing, true);
+            let action = app.on_key(key);
+            assert_eq!(action, Action::None, "key {key:?} should do nothing");
+            assert!(
+                app.message.as_ref().unwrap().text.contains("is pushing"),
+                "key {key:?} should explain why"
+            );
+        }
+    }
+
+    /// Moving around and marking stay available — only work that touches the
+    /// repository is held back.
+    #[test]
+    fn navigation_and_marking_still_work_on_a_busy_row() {
+        let mut app = app();
+        app.rows[0].set_busy(Activity::Fetching, true);
+        app.on_key(Key::Char(' '));
+        assert!(app.rows[0].marked);
+        app.on_key(Key::Down);
+        assert_eq!(app.cursor, 1);
+    }
+
+    #[test]
+    fn bulk_actions_skip_busy_rows_instead_of_failing() {
+        let mut app = app();
+        app.rows[0].set_busy(Activity::Pushing, true);
+        match app.on_key(Key::Char('F')) {
+            // Two rows are visible; the busy one is left out.
+            Action::Start(jobs) => assert_eq!(jobs, vec![Job::Fetch(2)]),
+            other => panic!("expected Start, got {other:?}"),
+        }
+        assert!(app
+            .message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("1 busy and skipped"));
+    }
+
+    #[test]
+    fn bulk_action_with_nothing_available_says_so() {
+        let mut app = app();
+        app.rows[0].set_busy(Activity::Pushing, true);
+        app.rows[2].set_busy(Activity::Pushing, true);
+        assert_eq!(app.on_key(Key::Char('R')), Action::None);
+        assert!(app
+            .message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("No rows available"));
+    }
+
+    #[test]
+    fn the_spinner_advances_with_each_tick() {
+        let mut app = app();
+        let first = app.spinner();
+        app.tick();
+        assert_ne!(first, app.spinner());
+        // One full turn returns to the start.
+        for _ in 1..10 {
+            app.tick();
+        }
+        assert_eq!(first, app.spinner());
     }
 
     #[test]

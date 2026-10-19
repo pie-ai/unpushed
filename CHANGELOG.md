@@ -12,6 +12,28 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 - Builds for `armv7-unknown-linux-musleabihf`, published as a tarball and as an
   `armhf` Debian package. Covers 32-bit Raspberry Pi OS from the Pi 2 onwards.
+- `Enter` opens GitUI in the selected repository, matching the key used to drill
+  into a repository in GitUI itself. `g` continues to work.
+- A row that is being read, fetched or pushed shows a spinner, says what it is
+  doing, and is dimmed. Pushing takes seconds, and until now the only sign of it
+  was a status character that did not move.
+
+### Fixed
+
+- A row no longer looks idle while a fetch is still running. Startup schedules a
+  scan *and* a fetch for every repository; the scan finishes first, and a single
+  activity field let it clear the fetch state too. Each kind of work is now
+  tracked separately, and the row reports the most consequential one.
+
+### Changed
+
+- Every key that touches a repository is refused while work is already running
+  on that row, not just a second push. A fetch during a push would move the refs
+  out from under it. Bulk actions skip busy rows and report how many.
+- The push confirmation accepts only `y`. `Enter` no longer confirms it: now
+  that `Enter` is the main action key in the list, accepting it here would turn
+  a habitual keypress into consent for a bulk push. `j` is gone too — it means
+  "down" everywhere else.
 
 ## [0.1.0] - 2026-10-19
 

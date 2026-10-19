@@ -10,7 +10,7 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
@@ -49,9 +49,20 @@ fn event_loop(
     results: &Receiver<JobResult>,
     repos: &[Repo],
 ) -> io::Result<()> {
+    let mut last_tick = Instant::now();
+
     loop {
         while let Ok(result) = results.try_recv() {
             app.apply(result);
+        }
+
+        // Driven by elapsed time, not by loop iterations: a held-down key makes
+        // `poll` return immediately every time, which would otherwise spin the
+        // animation far too fast — or, with the tick inside the poll timeout
+        // branch, freeze it entirely.
+        if last_tick.elapsed() >= TICK {
+            app.tick();
+            last_tick = Instant::now();
         }
 
         terminal.draw(|frame| ui::draw(frame, app))?;

@@ -81,19 +81,26 @@ scanned.
 | Key | Action |
 |-----|--------|
 | `j`/`k`, `↑`/`↓` | move the selection |
+| `Enter` (or `g`) | open GitUI in the repository |
 | `Space` | mark a row |
 | `p` | push the selected repository |
 | `A` | push every **visible** repository (asks first) |
 | `P` | push every **marked** repository (asks first) |
-| `g` | open GitUI in the repository |
 | `f` / `F` | fetch (selected / all visible) |
 | `r` / `R` | re-read (selected / all visible) |
 | `/` | filter by branch or name |
 | `a` | show all repositories, not just those needing attention |
 | `q` | quit |
 
-`g` requires [gitui](https://github.com/gitui-org/gitui) on your `PATH`; without
-it the row simply reports that it is missing.
+`Enter` requires [gitui](https://github.com/gitui-org/gitui) on your `PATH`;
+without it the row simply reports that it is missing. Quitting gitui returns you
+to the list with the same row selected, ready for `p`.
+
+While a repository is being fetched, read or pushed, its row shows a spinner and
+says what it is doing, and every key that would touch that repository is refused
+until it settles — a fetch in the middle of a push would move the refs out from
+under it. Moving the cursor and marking rows stay available, as do all other
+repositories.
 
 ## What it does on start
 

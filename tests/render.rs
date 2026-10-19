@@ -5,9 +5,10 @@
 //! push names what it would hit. Compiling is not evidence of any of that.
 
 use ratatui::backend::TestBackend;
+use ratatui::style::Color;
 use ratatui::Terminal;
 
-use unpushed::app::{App, JobResult, Key};
+use unpushed::app::{Activity, App, JobResult, Key};
 use unpushed::model::{
     Divergence, Head, MainState, Repo, RepoStatus, ScanError, ScanOutcome, UpstreamState, Worktree,
 };
@@ -58,6 +59,23 @@ fn screen(app: &App, width: u16, height: u16) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Foreground colour of the first cell on the line containing `needle`.
+/// Used to check that busy rows are dimmed rather than just assuming it.
+fn fg_of_row(app: &App, needle: &str, width: u16, height: u16) -> Option<Color> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| ui::draw(frame, app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    for y in 0..buffer.area.height {
+        let line: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        if let Some(col) = line.find(needle) {
+            return Some(buffer[(col as u16, y)].style().fg.unwrap_or(Color::Reset));
+        }
+    }
+    None
 }
 
 fn app() -> App {
@@ -195,4 +213,77 @@ fn unscanned_rows_render_as_pending_rather_than_clean() {
     assert!(out.contains("not-read-yet"), "{out}");
     assert!(out.contains("reading"), "{out}");
     assert!(out.contains("0 clean"), "{out}");
+}
+
+/// A push takes seconds. Without a visible sign, it looks like nothing happened.
+#[test]
+fn a_busy_row_shows_a_spinner_and_says_what_it_is_doing() {
+    let mut app = app();
+    app.rows[0].set_busy(Activity::Pushing, true);
+    let out = screen(&app, 100, 12);
+
+    let row = out.lines().find(|l| l.contains("backend-api")).unwrap();
+    assert!(row.contains("pushing …"), "{row}");
+    assert!(
+        row.chars().any(|c| "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".contains(c)),
+        "no spinner frame in: {row}"
+    );
+}
+
+#[test]
+fn each_activity_names_itself() {
+    for (activity, word) in [
+        (Activity::Scanning, "reading …"),
+        (Activity::Fetching, "fetching …"),
+        (Activity::Pushing, "pushing …"),
+    ] {
+        let mut app = app();
+        app.rows[0].set_busy(activity, true);
+        let out = screen(&app, 100, 12);
+        let row = out.lines().find(|l| l.contains("backend-api")).unwrap();
+        assert!(row.contains(word), "expected {word:?} in: {row}");
+    }
+}
+
+/// The dirty summary is older news than the work running right now.
+#[test]
+fn running_work_outranks_the_dirty_summary() {
+    let mut app = app();
+    app.rows[2].set_busy(Activity::Pushing, true);
+    let out = screen(&app, 100, 12);
+    let row = out.lines().find(|l| l.contains("api-gateway")).unwrap();
+    assert!(row.contains("pushing …"), "{row}");
+    assert!(!row.contains("2 modified"), "{row}");
+}
+
+#[test]
+fn a_busy_row_is_dimmed_and_an_idle_one_is_not() {
+    let mut busy = app();
+    busy.rows[0].set_busy(Activity::Pushing, true);
+    assert_eq!(
+        fg_of_row(&busy, "backend-api", 100, 12),
+        Some(Color::DarkGray)
+    );
+
+    let idle = app();
+    assert_ne!(
+        fg_of_row(&idle, "backend-api", 100, 12),
+        Some(Color::DarkGray)
+    );
+}
+
+#[test]
+fn the_spinner_frame_changes_between_ticks() {
+    let mut app = app();
+    app.rows[0].set_busy(Activity::Pushing, true);
+    let first = screen(&app, 100, 12);
+    app.tick();
+    let second = screen(&app, 100, 12);
+    assert_ne!(first, second, "the spinner should have advanced");
+}
+
+#[test]
+fn the_help_line_offers_enter_for_gitui() {
+    let out = screen(&app(), 120, 12);
+    assert!(out.contains("Enter gitui"), "{out}");
 }

@@ -57,7 +57,7 @@ from the list.</p>
    ↑  backend-api   feature/login  no upstream  ↑3
    ⚠  shared-lib    main           —            on default  ⚠ 2 modified
 
-j/k select · Space mark · p push · A visible · P marked · g gitui · f/F fetch · …</pre>
+j/k select · Enter gitui · p push · Space mark · A visible · P marked · f/F fetch · …</pre>
 
 <p class="note">Only one level is searched. Point it at the directory that
 <em>holds</em> the checkouts, not at the root of a tree.</p>
@@ -134,15 +134,19 @@ unpushed -T               # plain table instead of the interface</code></pre>
 <table>
   <tr><th>Key</th><th>Action</th></tr>
   <tr><td><code>j</code>/<code>k</code>, <code>↑</code>/<code>↓</code></td><td>move the selection</td></tr>
+  <tr><td><code>Enter</code> (or <code>g</code>)</td><td>open GitUI in the repository</td></tr>
   <tr><td><code>Space</code></td><td>mark a row</td></tr>
   <tr><td><code>p</code></td><td>push the selected repository</td></tr>
   <tr><td><code>A</code> / <code>P</code></td><td>push every visible / marked repository</td></tr>
-  <tr><td><code>g</code></td><td>open GitUI in the repository</td></tr>
   <tr><td><code>f</code> / <code>F</code></td><td>fetch selected / all visible</td></tr>
   <tr><td><code>/</code></td><td>filter by branch or name</td></tr>
   <tr><td><code>a</code></td><td>show all repositories</td></tr>
   <tr><td><code>q</code></td><td>quit</td></tr>
 </table>
+
+<p>While a repository is being fetched, read or pushed, its row shows a spinner
+and says what it is doing, and every key that would touch that repository is
+refused until it settles.</p>
 
 <p>Push fetches the repository first, refuses when the branch is behind
 <code>origin/&lt;branch&gt;</code> rather than forcing, and uses an explicit refspec

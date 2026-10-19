@@ -9,8 +9,8 @@ use ratatui::Frame;
 use crate::app::{Activity, App, Level, Mode, Row, View};
 use crate::model::{Divergence, MainState, ScanOutcome, UpstreamState};
 
-const HELP: &str = "j/k select · Space mark · p push · A visible · P marked · \
-                    g gitui · f/F fetch · r/R refresh · / filter · a all · q quit";
+const HELP: &str = "j/k select · Enter gitui · p push · Space mark · A visible · \
+                    P marked · f/F fetch · r/R refresh · / filter · a all · q quit";
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -101,7 +101,9 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
     let rows: Vec<TableRow> = visible
         .iter()
         .enumerate()
-        .map(|(position, &index)| render_row(&app.rows[index], position == app.cursor))
+        .map(|(position, &index)| {
+            render_row(&app.rows[index], position == app.cursor, app.spinner())
+        })
         .collect();
 
     // Repository and branch get exactly the width their content needs (within
@@ -154,13 +156,14 @@ fn branch_len(row: &Row) -> usize {
     }
 }
 
-fn render_row(row: &Row, selected: bool) -> TableRow<'static> {
+fn render_row(row: &Row, selected: bool, spinner: char) -> TableRow<'static> {
     let mark = if row.marked { "x" } else { " " };
 
-    let (marker, marker_style) = match (&row.outcome, row.activity) {
-        (_, Activity::Scanning) => ("…", Style::default().fg(Color::DarkGray)),
-        (_, Activity::Fetching) => ("↻", Style::default().fg(Color::Cyan)),
-        (_, Activity::Pushing) => ("→", Style::default().fg(Color::Cyan)),
+    let spinning = spinner.to_string();
+    let (marker, marker_style) = match (&row.outcome, row.activity()) {
+        (_, Activity::Scanning) => (spinning.as_str(), Style::default().fg(Color::DarkGray)),
+        (_, Activity::Fetching) => (spinning.as_str(), Style::default().fg(Color::Cyan)),
+        (_, Activity::Pushing) => (spinning.as_str(), Style::default().fg(Color::Cyan)),
         (None, _) => ("…", Style::default().fg(Color::DarkGray)),
         (Some(ScanOutcome::Failed(_)), _) => ("!", Style::default().fg(Color::Red)),
         (Some(ScanOutcome::Ok(status)), _) => {
@@ -215,6 +218,18 @@ fn render_row(row: &Row, selected: bool) -> TableRow<'static> {
         }
     };
 
+    // What is happening right now outranks anything that was true before it.
+    let (trailing, trailing_style) = match row.activity() {
+        Activity::Scanning => ("reading …".to_string(), Style::default().fg(Color::Cyan)),
+        Activity::Fetching => ("fetching …".to_string(), Style::default().fg(Color::Cyan)),
+        Activity::Pushing => ("pushing …".to_string(), Style::default().fg(Color::Cyan)),
+        Activity::Idle => (trailing, trailing_style),
+    };
+
+    // Busy rows are dimmed so the eye lands on them as "not yet settled".
+    // DarkGray rather than Modifier::DIM: not every terminal renders DIM.
+    let busy = row.activity() != Activity::Idle;
+
     let base = if selected {
         Style::default()
             .bg(Color::Indexed(238))
@@ -223,12 +238,20 @@ fn render_row(row: &Row, selected: bool) -> TableRow<'static> {
         Style::default()
     };
 
+    let dim = |style: Style| {
+        if busy {
+            style.fg(Color::DarkGray)
+        } else {
+            style
+        }
+    };
+
     TableRow::new(vec![
         Span::styled(mark.to_string(), base.fg(Color::Green)),
         Span::styled(marker.to_string(), base.patch(marker_style)),
-        Span::styled(row.repo.name.clone(), base),
-        Span::styled(branch, base.fg(Color::Blue)),
-        Span::styled(upstream, base),
+        Span::styled(row.repo.name.clone(), dim(base)),
+        Span::styled(branch, dim(base.fg(Color::Blue))),
+        Span::styled(upstream, dim(base)),
         Span::styled(main, base.fg(Color::DarkGray)),
         Span::styled(trailing, base.patch(trailing_style)),
     ])
