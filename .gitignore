@@ -4,6 +4,7 @@
 /man
 /completions
 
-# Planning documents: they reference local paths and tooling
+# Local-only notes: they reference local paths, tooling and secrets handling
 /plan.md
 /plan-release.md
+/local
