@@ -23,9 +23,11 @@ jobs:
           usesh: true
           # `git` is not optional: the test suite builds real repositories,
           # and fetch and push run as git subprocesses.
+          #
+          # pkg_add from the base system, by absolute path: the image has no
+          # pkgin, and the prepare step runs with a bare PATH.
           prepare: |
-            /usr/sbin/pkg_add -u || true
-            pkgin -y install rust-bin git
+            /usr/sbin/pkg_add -u rust-bin git
           run: |
             export PATH=/usr/pkg/bin:$PATH
             rustc --version && cargo --version && git --version
