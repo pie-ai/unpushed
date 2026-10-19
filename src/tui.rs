@@ -147,8 +147,12 @@ fn translate(key: KeyEvent) -> Key {
         KeyCode::Char(c) => Key::Char(c),
         KeyCode::Up => Key::Up,
         KeyCode::Down => Key::Down,
+        KeyCode::Left => Key::Left,
+        KeyCode::Right => Key::Right,
         KeyCode::Home => Key::Home,
         KeyCode::End => Key::End,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
         KeyCode::Enter => Key::Enter,
         KeyCode::Esc => Key::Esc,
         KeyCode::Backspace => Key::Backspace,
@@ -262,6 +266,19 @@ fn execute(job: Job, repos: &[Repo]) -> Vec<JobResult> {
             }
             results
         }
+        Job::Commits(index) => vec![JobResult::Commits {
+            index,
+            result: crate::commits::unpushed(&repo.path).map_err(|e| e.message().to_string()),
+        }],
+        Job::Diff {
+            index,
+            commit,
+            file,
+        } => vec![JobResult::Diff {
+            index,
+            result: crate::commits::file_diff(&repo.path, &commit, &file)
+                .map_err(|e| e.message().to_string()),
+        }],
         Job::Push { index, branch } => {
             let outcome = git::push(&repo.path, &branch);
             let pushed = outcome.is_success();
@@ -279,7 +296,11 @@ fn execute(job: Job, repos: &[Repo]) -> Vec<JobResult> {
 
 fn index_of(job: &Job) -> usize {
     match job {
-        Job::Scan(index) | Job::Fetch(index) | Job::Push { index, .. } => *index,
+        Job::Scan(index)
+        | Job::Fetch(index)
+        | Job::Push { index, .. }
+        | Job::Commits(index)
+        | Job::Diff { index, .. } => *index,
     }
 }
 
@@ -297,6 +318,9 @@ mod tests {
         assert_eq!(translate(key(KeyCode::Char('p'))), Key::Char('p'));
         assert_eq!(translate(key(KeyCode::Up)), Key::Up);
         assert_eq!(translate(key(KeyCode::Esc)), Key::Esc);
+        assert_eq!(translate(key(KeyCode::Right)), Key::Right);
+        assert_eq!(translate(key(KeyCode::Left)), Key::Left);
+        assert_eq!(translate(key(KeyCode::PageDown)), Key::PageDown);
         assert_eq!(translate(key(KeyCode::Tab)), Key::Other);
     }
 

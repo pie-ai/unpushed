@@ -8,7 +8,8 @@ use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use ratatui::Terminal;
 
-use unpushed::app::{Activity, App, JobResult, Key};
+use unpushed::app::{Activity, App, Diff, JobResult, Key, Panel};
+use unpushed::commits::{Commit, DiffLine, FileChange, LineKind, Status};
 use unpushed::model::{
     Divergence, Head, MainState, Repo, RepoStatus, ScanError, ScanOutcome, UpstreamState, Worktree,
 };
@@ -286,4 +287,230 @@ fn the_spinner_frame_changes_between_ticks() {
 fn the_help_line_offers_enter_for_gitui() {
     let out = screen(&app(), 120, 12);
     assert!(out.contains("Enter gitui"), "{out}");
+}
+
+fn commit(id: &str, summary: &str, files: &[(&str, Status)]) -> Commit {
+    Commit {
+        short_id: id.into(),
+        full_id: format!("{id}0000000000000000000000000000000000"),
+        summary: summary.into(),
+        author: "Ada".into(),
+        date: "2026-10-19".into(),
+        files: files
+            .iter()
+            .map(|(path, status)| FileChange {
+                status: *status,
+                path: (*path).into(),
+            })
+            .collect(),
+    }
+}
+
+fn with_panel(commits: Vec<Commit>, expanded: Vec<bool>) -> App {
+    let mut app = app();
+    app.panel = Some(Panel {
+        repo: 0,
+        commits,
+        expanded,
+        cursor: 0,
+        loading: false,
+        error: None,
+    });
+    app
+}
+
+#[test]
+fn the_panel_lists_commits_with_their_files() {
+    let app = with_panel(
+        vec![commit(
+            "a3f21c",
+            "bump parent pom",
+            &[("pom.xml", Status::Modified)],
+        )],
+        vec![true],
+    );
+    let out = screen(&app, 140, 14);
+    assert!(out.contains("backend-api — 1 unpushed"), "{out}");
+    assert!(out.contains("a3f21c"), "{out}");
+    assert!(out.contains("bump parent pom"), "{out}");
+    assert!(out.contains("M pom.xml"), "{out}");
+}
+
+/// A collapsed commit hides its files and says how many there are, so a
+/// commit touching hundreds of them cannot bury the rest.
+#[test]
+fn a_collapsed_commit_hides_its_files_and_reports_the_count() {
+    let app = with_panel(
+        vec![commit(
+            "7c4d88",
+            "big change",
+            &[("one.rs", Status::Modified), ("two.rs", Status::Added)],
+        )],
+        vec![false],
+    );
+    let out = screen(&app, 140, 14);
+    assert!(out.contains("(2 files)"), "{out}");
+    assert!(!out.contains("one.rs"), "{out}");
+    assert!(out.contains("▸"), "{out}");
+}
+
+#[test]
+fn space_folds_a_commit_open_and_shut() {
+    let mut app = with_panel(
+        vec![commit("a3f21c", "x", &[("pom.xml", Status::Modified)])],
+        vec![false],
+    );
+    assert!(!screen(&app, 140, 14).contains("pom.xml"));
+    app.on_key(Key::Char(' '));
+    assert!(screen(&app, 140, 14).contains("pom.xml"));
+    app.on_key(Key::Char(' '));
+    assert!(!screen(&app, 140, 14).contains("pom.xml"));
+}
+
+/// Opening the panel must not cost the list its identity — both are on
+/// screen. Names are truncated to fit the narrower column, which is the
+/// accepted price of the split, so the check is on prefixes.
+#[test]
+fn the_list_stays_visible_beside_the_panel() {
+    let app = with_panel(vec![commit("a3f21c", "x", &[])], vec![true]);
+    let out = screen(&app, 140, 14);
+    assert!(out.contains("backend-ap"), "{out}");
+    assert!(out.contains("api-gatewa"), "{out}");
+    assert!(
+        out.contains("backend-api — 1 unpushed"),
+        "panel missing: {out}"
+    );
+}
+
+#[test]
+fn a_repository_with_nothing_unpushed_says_so() {
+    let app = with_panel(Vec::new(), Vec::new());
+    assert!(screen(&app, 140, 14).contains("Nothing unpushed"));
+}
+
+#[test]
+fn the_panel_shows_that_it_is_still_reading() {
+    let mut app = app();
+    app.panel = Some(Panel {
+        repo: 0,
+        commits: Vec::new(),
+        expanded: Vec::new(),
+        cursor: 0,
+        loading: true,
+        error: None,
+    });
+    assert!(screen(&app, 140, 14).contains("reading"));
+}
+
+fn with_diff(path: &str, lines: Vec<DiffLine>) -> App {
+    let mut app = with_panel(
+        vec![commit("a3f21c", "x", &[(path, Status::Modified)])],
+        vec![true],
+    );
+    app.diff = Some(Diff {
+        repo: 0,
+        title: format!("backend-api · a3f21c · {path}"),
+        path: path.into(),
+        lines,
+        scroll: 0,
+        loading: false,
+        error: None,
+    });
+    app
+}
+
+#[test]
+fn the_diff_marks_added_and_removed_lines() {
+    let app = with_diff(
+        "main.rs",
+        vec![
+            DiffLine {
+                kind: LineKind::Header,
+                text: "@@ -1,2 +1,2 @@".into(),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                text: "fn main() {".into(),
+            },
+            DiffLine {
+                kind: LineKind::Removed,
+                text: "    let x = 1;".into(),
+            },
+            DiffLine {
+                kind: LineKind::Added,
+                text: "    let x = 2;".into(),
+            },
+        ],
+    );
+    let out = screen(&app, 140, 14);
+    assert!(out.contains("backend-api · a3f21c · main.rs"), "{out}");
+    assert!(out.contains("@@ -1,2 +1,2 @@"), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.trim_start().starts_with("-    let x = 1;")),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.trim_start().starts_with("+    let x = 2;")),
+        "{out}"
+    );
+}
+
+/// The diff needs the width; half a terminal makes it unreadable.
+#[test]
+fn the_diff_takes_the_whole_width() {
+    let app = with_diff(
+        "main.rs",
+        vec![DiffLine {
+            kind: LineKind::Context,
+            text: "fn main() {}".into(),
+        }],
+    );
+    let out = screen(&app, 140, 14);
+    assert!(
+        !out.contains("backend-api — 1 unpushed"),
+        "panel still drawn: {out}"
+    );
+    assert!(!out.contains("Branch"), "list still drawn: {out}");
+}
+
+#[test]
+fn scrolling_moves_through_the_diff() {
+    let lines: Vec<DiffLine> = (0..60)
+        .map(|n| DiffLine {
+            kind: LineKind::Context,
+            text: format!("line{n}"),
+        })
+        .collect();
+    let mut app = with_diff("main.rs", lines);
+    assert!(screen(&app, 140, 14).contains("line0"));
+    app.on_key(Key::PageDown);
+    let out = screen(&app, 140, 14);
+    assert!(!out.contains("line0"), "{out}");
+    app.on_key(Key::Home);
+    assert!(screen(&app, 140, 14).contains("line0"));
+}
+
+#[test]
+fn an_empty_diff_explains_itself() {
+    let app = with_diff("logo.png", Vec::new());
+    assert!(screen(&app, 140, 14).contains("binary"));
+}
+
+#[test]
+fn the_help_line_follows_the_focus() {
+    assert!(screen(&app(), 150, 14).contains("→ commits"));
+
+    let panel = with_panel(vec![commit("a", "x", &[])], vec![true]);
+    assert!(screen(&panel, 150, 14).contains("Space fold"));
+
+    let diff = with_diff(
+        "main.rs",
+        vec![DiffLine {
+            kind: LineKind::Context,
+            text: "x".into(),
+        }],
+    );
+    assert!(screen(&diff, 150, 14).contains("PgUp/PgDn"));
 }

@@ -8,6 +8,17 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+### Added
+
+- `→` opens a tree of a repository's unpushed commits beside the list: commit,
+  date, summary, and the changed files underneath. Commits touching eight files
+  or fewer come open, larger ones stay shut and report how many they hold.
+  `Space` folds a commit, `←` walks back out. Push, fetch and gitui keep working
+  while the tree is open and act on the repository it belongs to.
+- `→` on a file shows its diff with syntax highlighting. The marker column
+  carries the add/remove signal and the content keeps its language colours, so
+  both readings are available at once.
+
 ## [0.2.1] - 2026-10-19
 
 ### Added

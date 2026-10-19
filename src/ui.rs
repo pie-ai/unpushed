@@ -1,16 +1,32 @@
 //! Rendering the application state with ratatui.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row as TableRow, Table, Wrap};
 use ratatui::Frame;
 
-use crate::app::{Activity, App, Level, Mode, Row, View};
+use crate::app::{Activity, App, Diff, Focus, Item, Level, Mode, Panel, Row, View};
+use crate::commits::LineKind;
 use crate::model::{Divergence, MainState, ScanOutcome, UpstreamState};
 
-const HELP: &str = "j/k select · Enter gitui · p push · Space mark · A visible · \
-                    P marked · f/F fetch · r/R refresh · / filter · a all · q quit";
+/// Per-focus, because the list keys are no help while reading a diff.
+fn help(app: &App) -> &'static str {
+    match app.focus() {
+        Focus::List => {
+            "j/k select · → commits · Enter gitui · p push · Space mark · \
+             A visible · P marked · f/F fetch · r/R refresh · / filter · a all · q quit"
+        }
+        Focus::Panel => {
+            "j/k move · Space fold · → open · ← back · p push · Enter gitui · \
+             f fetch · r refresh · q quit"
+        }
+        Focus::Diff => "j/k · PgUp/PgDn · Home/End scroll · ← back · q quit",
+    }
+}
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -21,7 +37,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     draw_header(frame, app, header);
-    draw_table(frame, app, body);
+
+    // Each level gets the room it needs: the list alone, the list beside the
+    // commit tree, and a diff over the full width — a diff is unreadable in
+    // half a terminal.
+    match (&app.diff, &app.panel) {
+        (Some(diff), _) => draw_diff(frame, diff, body),
+        (None, Some(panel)) => {
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
+                    .areas(body);
+            draw_table(frame, app, left);
+            draw_panel(frame, app, panel, right);
+        }
+        (None, None) => draw_table(frame, app, body),
+    }
+
     draw_footer(frame, app, footer);
 
     if let Mode::Confirm(confirm) = &app.mode {
@@ -303,6 +334,214 @@ fn describe_worktree(status: &crate::model::RepoStatus) -> String {
     format!("⚠ {}", parts.join(", "))
 }
 
+/// The commit tree: unpushed commits, with their files under them.
+fn draw_panel(frame: &mut Frame, app: &App, panel: &Panel, area: Rect) {
+    let name = app
+        .rows
+        .get(panel.repo)
+        .map(|r| r.repo.name.as_str())
+        .unwrap_or("?");
+
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [title_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+
+    let title = if panel.loading {
+        format!(" {name} — reading …")
+    } else if let Some(err) = &panel.error {
+        format!(" {name} — {err}")
+    } else {
+        format!(" {name} — {} unpushed", panel.commits.len())
+    };
+    frame.render_widget(
+        Paragraph::new(title).style(Style::default().add_modifier(Modifier::BOLD)),
+        title_area,
+    );
+
+    if panel.commits.is_empty() {
+        // Loading and failure already show in the title; only the genuinely
+        // empty case needs a word here.
+        let text = if panel.loading || panel.error.is_some() {
+            ""
+        } else {
+            " Nothing unpushed."
+        };
+        frame.render_widget(
+            Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
+            list_area,
+        );
+        return;
+    }
+
+    let items = panel.items();
+    let height = list_area.height as usize;
+    // Keep the cursor in view without a scrollbar: show the window that
+    // contains it.
+    let first = panel.cursor.saturating_sub(height.saturating_sub(1));
+
+    let lines: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(height)
+        .map(|(position, item)| {
+            let selected = position == panel.cursor;
+            let base = if selected {
+                Style::default()
+                    .bg(Color::Indexed(238))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            match *item {
+                Item::Commit(c) => {
+                    let commit = &panel.commits[c];
+                    let open = panel.expanded.get(c).copied().unwrap_or(false);
+                    let marker = if open { "▾" } else { "▸" };
+                    let count = if open || commit.files.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  ({} files)", commit.files.len())
+                    };
+                    Line::from(vec![
+                        Span::styled(format!(" {marker} "), base.fg(Color::DarkGray)),
+                        Span::styled(format!("{} ", commit.short_id), base.fg(Color::Yellow)),
+                        Span::styled(format!("{} ", commit.date), base.fg(Color::DarkGray)),
+                        Span::styled(commit.summary.clone(), base),
+                        Span::styled(count, base.fg(Color::DarkGray)),
+                    ])
+                }
+                Item::File(c, f) => {
+                    let file = &panel.commits[c].files[f];
+                    Line::from(vec![
+                        Span::styled("     ", base),
+                        Span::styled(
+                            format!("{} ", file.status.letter()),
+                            base.fg(status_colour(file.status)),
+                        ),
+                        Span::styled(file.path.clone(), base.fg(Color::Blue)),
+                    ])
+                }
+            }
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), list_area);
+}
+
+fn status_colour(status: crate::commits::Status) -> Color {
+    use crate::commits::Status;
+    match status {
+        Status::Added => Color::Green,
+        Status::Deleted => Color::Red,
+        Status::Modified => Color::Yellow,
+        Status::Renamed => Color::Magenta,
+        Status::Other => Color::DarkGray,
+    }
+}
+
+/// Highlighting a diff costs real work, and the interface redraws ten times a
+/// second. The result is kept for the file currently on screen; switching
+/// files replaces it.
+fn highlighted(diff: &Diff) -> Rc<Vec<crate::highlight::Highlighted>> {
+    /// Title and line count identify what is cached; together they change
+    /// whenever the content does.
+    type Cached = Option<(String, usize, Rc<Vec<crate::highlight::Highlighted>>)>;
+
+    thread_local! {
+        static CACHE: RefCell<Cached> = const { RefCell::new(None) };
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((title, len, lines)) = cache.as_ref() {
+            if title == &diff.title && *len == diff.lines.len() {
+                return Rc::clone(lines);
+            }
+        }
+        let lines = std::rc::Rc::new(crate::highlight::diff(&diff.path, &diff.lines));
+        *cache = Some((
+            diff.title.clone(),
+            diff.lines.len(),
+            std::rc::Rc::clone(&lines),
+        ));
+        lines
+    })
+}
+
+fn draw_diff(frame: &mut Frame, diff: &Diff, area: Rect) {
+    let [title_area, body] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+
+    frame.render_widget(
+        Paragraph::new(diff.title.clone()).style(Style::default().add_modifier(Modifier::BOLD)),
+        title_area,
+    );
+
+    if diff.loading {
+        frame.render_widget(
+            Paragraph::new("reading …").style(Style::default().fg(Color::DarkGray)),
+            body,
+        );
+        return;
+    }
+    if let Some(err) = &diff.error {
+        frame.render_widget(
+            Paragraph::new(err.clone()).style(Style::default().fg(Color::Red)),
+            body,
+        );
+        return;
+    }
+    if diff.lines.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No textual diff — the file may be binary.")
+                .style(Style::default().fg(Color::DarkGray)),
+            body,
+        );
+        return;
+    }
+
+    let coloured = highlighted(diff);
+    let height = body.height as usize;
+
+    let lines: Vec<Line> = diff
+        .lines
+        .iter()
+        .zip(coloured.iter())
+        .skip(diff.scroll)
+        .take(height)
+        .map(|(line, pieces)| {
+            // The marker column carries the add/remove signal; the content
+            // keeps its syntax colours, so both readings are available at once.
+            let (marker, marker_style) = match line.kind {
+                LineKind::Added => ("+", Style::default().fg(Color::Green)),
+                LineKind::Removed => ("-", Style::default().fg(Color::Red)),
+                LineKind::Context => (" ", Style::default()),
+                LineKind::Header => ("", Style::default()),
+            };
+
+            if line.kind == LineKind::Header {
+                return Line::from(Span::styled(
+                    line.text.clone(),
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
+
+            let mut spans = vec![Span::styled(marker.to_string(), marker_style)];
+            for (style, text) in pieces {
+                spans.push(Span::styled(text.clone(), *style));
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), body);
+}
+
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = Vec::new();
 
@@ -324,7 +563,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     lines.push(Line::from(Span::styled(
-        HELP,
+        help(app),
         Style::default().fg(Color::DarkGray),
     )));
 

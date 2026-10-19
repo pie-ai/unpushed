@@ -6,6 +6,7 @@
 //! work, which keeps the interesting rules — what is visible, what a key does,
 //! what a bulk push would hit — testable without a tty.
 
+use crate::commits::{Commit, DiffLine};
 use crate::git::PushOutcome;
 use crate::model::{Head, Repo, ScanOutcome, Summary};
 
@@ -40,7 +41,18 @@ pub enum Activity {
 pub enum Job {
     Scan(usize),
     Fetch(usize),
-    Push { index: usize, branch: String },
+    Push {
+        index: usize,
+        branch: String,
+    },
+    /// Unpushed commits of one repository, for the panel.
+    Commits(usize),
+    /// One file's diff within one commit.
+    Diff {
+        index: usize,
+        commit: String,
+        file: String,
+    },
 }
 
 /// Result of background work, fed back into the state.
@@ -57,6 +69,14 @@ pub enum JobResult {
     Pushed {
         index: usize,
         outcome: PushOutcome,
+    },
+    Commits {
+        index: usize,
+        result: Result<Vec<Commit>, String>,
+    },
+    Diff {
+        index: usize,
+        result: Result<Vec<DiffLine>, String>,
     },
 }
 
@@ -90,6 +110,105 @@ pub struct Confirm {
     pub prompt: String,
     pub targets: Vec<String>,
     pub jobs: Vec<Job>,
+}
+
+/// One line of the commit tree, flattened for cursor movement and drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Item {
+    Commit(usize),
+    /// Commit index, then file index within that commit.
+    File(usize, usize),
+}
+
+/// Commits with few files are opened straight away — in a survey of 82
+/// unpushed commits, 59 touched exactly one file, and making those cost a
+/// keypress would be pure friction. Larger ones stay shut so a commit touching
+/// hundreds of files cannot bury the rest.
+pub const AUTO_EXPAND_UP_TO: usize = 8;
+
+/// The commit panel for one repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Panel {
+    pub repo: usize,
+    pub commits: Vec<Commit>,
+    pub expanded: Vec<bool>,
+    /// Position within [`Panel::items`].
+    pub cursor: usize,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+impl Panel {
+    fn loading(repo: usize) -> Self {
+        Panel {
+            repo,
+            commits: Vec::new(),
+            expanded: Vec::new(),
+            cursor: 0,
+            loading: true,
+            error: None,
+        }
+    }
+
+    /// The tree as a flat list, which is what the cursor moves through and
+    /// what the renderer draws.
+    pub fn items(&self) -> Vec<Item> {
+        let mut items = Vec::new();
+        for (c, commit) in self.commits.iter().enumerate() {
+            items.push(Item::Commit(c));
+            if self.expanded.get(c).copied().unwrap_or(false) {
+                for f in 0..commit.files.len() {
+                    items.push(Item::File(c, f));
+                }
+            }
+        }
+        items
+    }
+
+    pub fn selected(&self) -> Option<Item> {
+        self.items().get(self.cursor).copied()
+    }
+
+    fn toggle(&mut self, commit: usize) {
+        if let Some(flag) = self.expanded.get_mut(commit) {
+            *flag = !*flag;
+        }
+        self.clamp();
+    }
+
+    fn move_cursor(&mut self, delta: isize) {
+        let len = self.items().len();
+        if len == 0 {
+            self.cursor = 0;
+            return;
+        }
+        self.cursor = (self.cursor as isize + delta).clamp(0, len as isize - 1) as usize;
+    }
+
+    fn clamp(&mut self) {
+        self.cursor = self.cursor.min(self.items().len().saturating_sub(1));
+    }
+}
+
+/// A single file's diff, shown over the whole width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diff {
+    pub repo: usize,
+    pub title: String,
+    /// Kept for picking the syntax definition.
+    pub path: String,
+    pub lines: Vec<DiffLine>,
+    pub scroll: usize,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+/// Which part of the interface the keys apply to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    List,
+    Panel,
+    Diff,
 }
 
 /// Severity of the status line message.
@@ -198,6 +317,10 @@ pub struct App {
     /// Advances on a timer so busy rows can animate. Nothing else depends on
     /// it, so wrapping is harmless.
     tick: u64,
+    /// Commit tree for one repository, when opened.
+    pub panel: Option<Panel>,
+    /// A file's diff, on top of the panel.
+    pub diff: Option<Diff>,
 }
 
 /// Frames for the busy indicator. Ten of them at the 100 ms tick make one
@@ -217,6 +340,20 @@ impl App {
             base,
             fetching: 0,
             tick: 0,
+            panel: None,
+            diff: None,
+        }
+    }
+
+    /// Where the keys go. Derived rather than stored, so it cannot drift from
+    /// what is actually on screen.
+    pub fn focus(&self) -> Focus {
+        if self.diff.is_some() {
+            Focus::Diff
+        } else if self.panel.is_some() {
+            Focus::Panel
+        } else {
+            Focus::List
         }
     }
 
@@ -325,6 +462,33 @@ impl App {
                     }
                 }
             }
+            JobResult::Commits { index, result } => {
+                // Only accept it if the panel still shows the repository that
+                // was asked for: the cursor may have moved on while it loaded.
+                if let Some(panel) = self.panel.as_mut().filter(|p| p.repo == index) {
+                    panel.loading = false;
+                    match result {
+                        Ok(commits) => {
+                            panel.expanded = commits
+                                .iter()
+                                .map(|c| c.files.len() <= AUTO_EXPAND_UP_TO)
+                                .collect();
+                            panel.commits = commits;
+                            panel.clamp();
+                        }
+                        Err(err) => panel.error = Some(err),
+                    }
+                }
+            }
+            JobResult::Diff { index, result } => {
+                if let Some(diff) = self.diff.as_mut().filter(|d| d.repo == index) {
+                    diff.loading = false;
+                    match result {
+                        Ok(lines) => diff.lines = lines,
+                        Err(err) => diff.error = Some(err),
+                    }
+                }
+            }
             JobResult::Pushed { index, outcome } => {
                 if let Some(row) = self.rows.get_mut(index) {
                     row.set_busy(Activity::Pushing, false);
@@ -342,6 +506,10 @@ impl App {
             Job::Scan(index) => (*index, Activity::Scanning),
             Job::Fetch(index) => (*index, Activity::Fetching),
             Job::Push { index, .. } => (*index, Activity::Pushing),
+            // Reading commits or a diff is read-only and takes milliseconds.
+            // Marking the row busy would flash a spinner and lock keys for no
+            // reason; the panel shows its own loading state.
+            Job::Commits(_) | Job::Diff { .. } => return,
         };
         if let Some(row) = self.rows.get_mut(index) {
             row.set_busy(activity, true);
@@ -353,7 +521,11 @@ impl App {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Filter { draft, previous } => self.key_in_filter(key, draft, previous),
             Mode::Confirm(confirm) => self.key_in_confirm(key, confirm),
-            Mode::Normal => self.key_in_normal(key),
+            Mode::Normal => match self.focus() {
+                Focus::Diff => self.key_in_diff(key),
+                Focus::Panel => self.key_in_panel(key),
+                Focus::List => self.key_in_normal(key),
+            },
         }
     }
 
@@ -465,19 +637,18 @@ impl App {
             // drilling into a repository in gitui itself. `g` stays as a
             // second binding.
             Key::Enter | Key::Char('g') => match self.selected() {
-                Some(index) => match self.require_idle(index) {
-                    Ok(()) => Action::OpenGitui(index),
-                    Err(reason) => self.warn(&reason),
-                },
+                Some(index) => self.open_gitui(index),
+                None => self.warn("No row selected."),
+            },
+            // Rightwards drills in, the same direction as everywhere else.
+            Key::Right | Key::Char('l') => match self.selected() {
+                Some(index) => self.open_panel(index),
                 None => self.warn("No row selected."),
             },
             // A single push is immediate: it affects one named repository the
             // cursor is on. Bulk pushes are confirmed instead.
             Key::Char('p') => match self.selected() {
-                Some(index) => match self.push_job(index) {
-                    Ok(job) => self.start(vec![job]),
-                    Err(reason) => self.warn(&reason),
-                },
+                Some(index) => self.push_row(index),
                 None => self.warn("No row selected."),
             },
             Key::Char('A') => {
@@ -511,6 +682,171 @@ impl App {
             Activity::Scanning => Err(format!("{} is being read.", row.repo.name)),
             Activity::Fetching => Err(format!("{} is fetching.", row.repo.name)),
             Activity::Pushing => Err(format!("{} is pushing.", row.repo.name)),
+        }
+    }
+
+    fn open_gitui(&mut self, index: usize) -> Action {
+        match self.require_idle(index) {
+            Ok(()) => Action::OpenGitui(index),
+            Err(reason) => self.warn(&reason),
+        }
+    }
+
+    fn push_row(&mut self, index: usize) -> Action {
+        match self.push_job(index) {
+            Ok(job) => self.start(vec![job]),
+            Err(reason) => self.warn(&reason),
+        }
+    }
+
+    fn job_on_row(&mut self, index: usize, make: fn(usize) -> Job) -> Action {
+        match self.require_idle(index) {
+            Ok(()) => self.start(vec![make(index)]),
+            Err(reason) => self.warn(&reason),
+        }
+    }
+
+    /// Opens the commit tree for a repository and asks for its commits.
+    fn open_panel(&mut self, index: usize) -> Action {
+        let Some(row) = self.rows.get(index) else {
+            return Action::None;
+        };
+        if matches!(row.outcome, Some(ScanOutcome::Failed(_))) {
+            return self.warn(&format!("{}: scan failed.", row.repo.name));
+        }
+        self.panel = Some(Panel::loading(index));
+        Action::Start(vec![Job::Commits(index)])
+    }
+
+    fn key_in_panel(&mut self, key: Key) -> Action {
+        let Some(panel) = self.panel.as_mut() else {
+            return Action::None;
+        };
+        let repo = panel.repo;
+
+        match key {
+            Key::Down | Key::Char('j') => {
+                panel.move_cursor(1);
+                Action::None
+            }
+            Key::Up | Key::Char('k') => {
+                panel.move_cursor(-1);
+                Action::None
+            }
+            Key::Home => {
+                panel.cursor = 0;
+                Action::None
+            }
+            Key::End => {
+                panel.cursor = panel.items().len().saturating_sub(1);
+                Action::None
+            }
+            Key::Char(' ') => {
+                if let Some(Item::Commit(c)) = panel.selected() {
+                    panel.toggle(c);
+                }
+                Action::None
+            }
+            Key::Right | Key::Char('l') => match panel.selected() {
+                // On a commit the rightward move opens it; on a file it goes
+                // one level further, into the diff.
+                Some(Item::Commit(c)) => {
+                    if !panel.expanded.get(c).copied().unwrap_or(false) {
+                        panel.toggle(c);
+                    }
+                    Action::None
+                }
+                Some(Item::File(c, f)) => self.open_diff(c, f),
+                None => Action::None,
+            },
+            Key::Left | Key::Char('h') | Key::Esc => {
+                self.panel = None;
+                Action::None
+            }
+            // Repo actions keep working, so you can look at the commits and
+            // then push without leaving. They target the panel's repository
+            // explicitly, not the list cursor — a background refresh can move
+            // that out from under the panel.
+            Key::Char('p') => self.push_row(repo),
+            Key::Enter | Key::Char('g') => self.open_gitui(repo),
+            Key::Char('f') => self.job_on_row(repo, Job::Fetch),
+            Key::Char('r') => self.job_on_row(repo, Job::Scan),
+            Key::Char('q') => Action::Quit,
+            _ => Action::None,
+        }
+    }
+
+    fn open_diff(&mut self, commit: usize, file: usize) -> Action {
+        let Some(panel) = self.panel.as_ref() else {
+            return Action::None;
+        };
+        let Some(c) = panel.commits.get(commit) else {
+            return Action::None;
+        };
+        let Some(f) = c.files.get(file) else {
+            return Action::None;
+        };
+        let name = self
+            .rows
+            .get(panel.repo)
+            .map(|r| r.repo.name.as_str())
+            .unwrap_or("?");
+
+        self.diff = Some(Diff {
+            repo: panel.repo,
+            title: format!("{name} · {} · {}", c.short_id, f.path),
+            path: f.path.clone(),
+            lines: Vec::new(),
+            scroll: 0,
+            loading: true,
+            error: None,
+        });
+        Action::Start(vec![Job::Diff {
+            index: panel.repo,
+            commit: c.full_id.clone(),
+            file: f.path.clone(),
+        }])
+    }
+
+    fn key_in_diff(&mut self, key: Key) -> Action {
+        let Some(diff) = self.diff.as_mut() else {
+            return Action::None;
+        };
+        // One short of a screen, so a line of context carries over.
+        let page = 20;
+        let last = diff.lines.len().saturating_sub(1);
+
+        match key {
+            Key::Down | Key::Char('j') => {
+                diff.scroll = (diff.scroll + 1).min(last);
+                Action::None
+            }
+            Key::Up | Key::Char('k') => {
+                diff.scroll = diff.scroll.saturating_sub(1);
+                Action::None
+            }
+            Key::PageDown | Key::Char(' ') => {
+                diff.scroll = (diff.scroll + page).min(last);
+                Action::None
+            }
+            Key::PageUp => {
+                diff.scroll = diff.scroll.saturating_sub(page);
+                Action::None
+            }
+            Key::Home => {
+                diff.scroll = 0;
+                Action::None
+            }
+            Key::End => {
+                diff.scroll = last;
+                Action::None
+            }
+            Key::Left | Key::Char('h') | Key::Esc => {
+                self.diff = None;
+                Action::None
+            }
+            Key::Char('q') => Action::Quit,
+            _ => Action::None,
         }
     }
 
@@ -693,8 +1029,12 @@ pub enum Key {
     Char(char),
     Up,
     Down,
+    Left,
+    Right,
     Home,
     End,
+    PageUp,
+    PageDown,
     Enter,
     Esc,
     Backspace,

@@ -137,6 +137,8 @@ unpushed -T               # plain table instead of the interface</code></pre>
 <table>
   <tr><th>Key</th><th>Action</th></tr>
   <tr><td><code>j</code>/<code>k</code>, <code>↑</code>/<code>↓</code></td><td>move the selection</td></tr>
+  <tr><td><code>→</code> / <code>l</code></td><td>open the commit tree; again on a file opens its diff</td></tr>
+  <tr><td><code>←</code> / <code>Esc</code></td><td>back one level</td></tr>
   <tr><td><code>Enter</code> (or <code>g</code>)</td><td>open GitUI in the repository</td></tr>
   <tr><td><code>Space</code></td><td>mark a row</td></tr>
   <tr><td><code>p</code></td><td>push the selected repository</td></tr>
@@ -146,6 +148,12 @@ unpushed -T               # plain table instead of the interface</code></pre>
   <tr><td><code>a</code></td><td>show all repositories</td></tr>
   <tr><td><code>q</code></td><td>quit</td></tr>
 </table>
+
+<p><code>→</code> opens a tree of the commits a repository has not pushed, beside
+the list: commit, date, summary, and the files underneath. <code>→</code> again
+on a file shows its diff with syntax highlighting. The count in the tree is
+measured against the same reference as the <code>↑</code> in the list, so the
+two cannot disagree.</p>
 
 <p>The list keeps itself current: every few seconds every repository is read
 again, so a file you change in another window shows up on its own. Background

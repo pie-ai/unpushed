@@ -88,6 +88,8 @@ scanned.
 | Key | Action |
 |-----|--------|
 | `j`/`k`, `↑`/`↓` | move the selection |
+| `→`, `l` | open the commit tree; again on a file opens its diff |
+| `←`, `h`, `Esc` | back one level |
 | `Enter` (or `g`) | open GitUI in the repository |
 | `Space` | mark a row |
 | `p` | push the selected repository |
@@ -108,6 +110,20 @@ says what it is doing, and every key that would touch that repository is refused
 until it settles — a fetch in the middle of a push would move the refs out from
 under it. Moving the cursor and marking rows stay available, as do all other
 repositories.
+
+## Looking at what you are about to push
+
+`→` opens a tree of the commits this repository has not pushed, beside the
+list. Commits touching a handful of files come open; larger ones stay shut and
+say how many they hold, so one sprawling commit cannot bury the rest. `Space`
+folds a commit open or shut, `→` on a file shows its diff with syntax
+highlighting, and `←` walks back out.
+
+The commit count in the tree is measured against the same reference as the
+`↑` in the list — the branch's upstream when it has one — so the two can never
+disagree. Push, fetch and gitui keep working while the tree is open and act on
+the repository it belongs to, so you can read the commits and then push without
+going back.
 
 ## What it does on start, and while it runs
 

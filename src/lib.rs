@@ -11,15 +11,19 @@
 //!   conflate (no upstream vs. nothing to push, failed scan vs. clean).
 //! - [`discover`] — finding checkouts exactly one level below a directory.
 //! - [`scan`] — reading local status in parallel, without touching the network.
+//! - [`commits`] — unpushed commits and their diffs, loaded on demand.
 //! - [`git`] — fetch and push, run as `git` subprocesses.
 //! - [`app`] — application state and key handling, free of terminal code.
+//! - [`highlight`] — syntax colouring for the diff view.
 //! - [`ui`] — ratatui rendering.
 //! - [`tui`] — terminal setup, event loop and worker pool.
 //! - [`table`] — plain stdout rendering for non-interactive use.
 
 pub mod app;
+pub mod commits;
 pub mod discover;
 pub mod git;
+pub mod highlight;
 pub mod model;
 pub mod scan;
 pub mod table;

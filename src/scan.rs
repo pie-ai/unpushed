@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use git2::{BranchType, ErrorCode, Repository, StatusOptions};
+use git2::{BranchType, ErrorCode, Oid, Repository, StatusOptions};
 
 use crate::model::{
     Divergence, Head, MainState, Repo, RepoStatus, ScanError, ScanOutcome, UpstreamState, Worktree,
@@ -126,6 +126,33 @@ fn read_head(git: &Repository) -> Result<Head, git2::Error> {
                 .unwrap_or_else(|| "HEAD".to_string());
             Ok(Head::Unborn(name))
         }
+        Err(err) => Err(err),
+    }
+}
+
+/// The commit that "unpushed" is measured against: the branch's upstream when
+/// one is configured, the remote default branch otherwise.
+///
+/// Shared with [`crate::commits`] on purpose. If the commit panel resolved its
+/// own reference, the list could report `↑21` while the panel listed a
+/// different set — and there would be no way to tell which one was right.
+pub fn base_ref(git: &Repository) -> Result<Option<Oid>, git2::Error> {
+    let head = read_head(git)?;
+
+    if let Some(branch_name) = head.branch_name() {
+        if let Ok(branch) = git.find_branch(branch_name, BranchType::Local) {
+            if let Ok(upstream) = branch.upstream() {
+                return Ok(upstream.get().target());
+            }
+        }
+    }
+
+    let Some(main_ref) = default_branch(git) else {
+        return Ok(None);
+    };
+    match git.find_branch(&main_ref, BranchType::Remote) {
+        Ok(branch) => Ok(branch.get().target()),
+        Err(err) if err.code() == ErrorCode::NotFound => Ok(None),
         Err(err) => Err(err),
     }
 }
