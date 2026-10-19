@@ -10,6 +10,14 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ### Added
 
+- Homebrew now works on Linux as well. The formula only had `on_macos`, so
+  `brew install` failed there even though the statically linked Linux binaries
+  were sitting in the release.
+- Packages for Arch (AUR, `unpushed-bin`), Fedora/RHEL/openSUSE (`.rpm`, with a
+  signed dnf repository) and Alpine (`.apk`, with a signed apk repository).
+  The dnf repository is signed with the same key as apt; apk uses its own RSA
+  key, since it has no notion of GPG.
+
 - NetBSD, FreeBSD and OpenBSD are checked before every release: each builds and
   passes the full test suite from source, under emulation, with no
   platform-specific code. `cargo install unpushed` is the way in on all three —

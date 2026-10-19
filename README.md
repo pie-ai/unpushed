@@ -23,7 +23,7 @@ checkouts, not at the root of a tree.
 
 ## Install
 
-**Homebrew** (macOS):
+**Homebrew** (macOS *and* Linux):
 
 ```bash
 brew tap pie-ai/unpushed
@@ -38,6 +38,29 @@ curl -fsSL https://pie-ai.github.io/unpushed/key.gpg \
 echo "deb [signed-by=/etc/apt/keyrings/unpushed.asc] https://pie-ai.github.io/unpushed stable main" \
   | sudo tee /etc/apt/sources.list.d/unpushed.list
 sudo apt update && sudo apt install unpushed
+```
+
+**Arch Linux** — from the AUR:
+
+```bash
+yay -S unpushed-bin     # or paru, or makepkg -si
+```
+
+**Fedora, RHEL, openSUSE**:
+
+```bash
+sudo curl -fsSLo /etc/yum.repos.d/unpushed.repo \
+  https://pie-ai.github.io/unpushed/unpushed.repo
+sudo dnf install unpushed
+```
+
+**Alpine**:
+
+```sh
+sudo curl -fsSLo /etc/apk/keys/unpushed.rsa.pub \
+  https://pie-ai.github.io/unpushed/alpine-key.rsa.pub
+echo "https://pie-ai.github.io/unpushed/apk" | sudo tee -a /etc/apk/repositories
+sudo apk update && sudo apk add unpushed
 ```
 
 **Prebuilt binaries** for Linux (x86_64, aarch64, armv7) and macOS (Apple

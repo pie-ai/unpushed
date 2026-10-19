@@ -1,0 +1,39 @@
+# Template rendered by .github/workflows/release.yml and pushed to the AUR.
+# Do not edit the copy in the AUR repository by hand.
+#
+# Named `unpushed-bin` because it installs a prebuilt binary; that is the AUR
+# convention, and it leaves the plain `unpushed` name free for a source build.
+# Maintainer: pie-ai <pie-ai@users.noreply.github.com>
+pkgname=unpushed-bin
+_pkgname=unpushed
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Overview of unpushed commits across many git checkouts"
+arch=('x86_64' 'aarch64')
+url="https://github.com/pie-ai/unpushed"
+license=('MIT' 'Apache-2.0')
+# The binary is statically linked against musl, so it needs nothing at runtime.
+depends=()
+optdepends=('gitui: open a repository with the g key')
+provides=("${_pkgname}")
+conflicts=("${_pkgname}")
+
+source_x86_64=("${_pkgname}-${pkgver}-x86_64.tar.gz::${url}/releases/download/v${pkgver}/unpushed-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("${_pkgname}-${pkgver}-aarch64.tar.gz::${url}/releases/download/v${pkgver}/unpushed-aarch64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('@LINUX_X86_SHA@')
+sha256sums_aarch64=('@LINUX_ARM_SHA@')
+
+package() {
+    local _dir="${srcdir}/unpushed-$( [[ $CARCH == x86_64 ]] && echo x86_64 || echo aarch64 )-unknown-linux-musl"
+
+    install -Dm755 "${_dir}/unpushed"            "${pkgdir}/usr/bin/${_pkgname}"
+    install -Dm644 "${_dir}/unpushed.1"          "${pkgdir}/usr/share/man/man1/${_pkgname}.1"
+    install -Dm644 "${_dir}/unpushed.bash"       "${pkgdir}/usr/share/bash-completion/completions/${_pkgname}"
+    install -Dm644 "${_dir}/_unpushed"           "${pkgdir}/usr/share/zsh/site-functions/_${_pkgname}"
+    install -Dm644 "${_dir}/unpushed.fish"       "${pkgdir}/usr/share/fish/vendor_completions.d/${_pkgname}.fish"
+    install -Dm644 "${_dir}/LICENSE-MIT"         "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+    install -Dm644 "${_dir}/LICENSE-APACHE"      "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
+    install -Dm644 "${_dir}/THIRD-PARTY-LICENSES.md" "${pkgdir}/usr/share/licenses/${pkgname}/THIRD-PARTY-LICENSES.md"
+    install -Dm644 "${_dir}/README.md"           "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 "${_dir}/CHANGELOG.md"        "${pkgdir}/usr/share/doc/${pkgname}/CHANGELOG.md"
+}

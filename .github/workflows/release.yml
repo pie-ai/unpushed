@@ -45,9 +45,13 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             deb: true
+            rpm: x86_64
+            apk: x86_64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             deb: true
+            rpm: aarch64
+            apk: aarch64
           # 32-bit Raspberry Pi and Debian armhf. Built with `cross` because
           # vendored libgit2 needs a musl C cross-toolchain, and Ubuntu ships
           # none. Docker is used here only as a build tool — nothing container
@@ -144,6 +148,65 @@ jobs:
           ls -la ./*.deb
           dpkg-deb -I ./*.deb
 
+      # Fedora, RHEL and openSUSE. Only the 64-bit targets: armv7 is a
+      # Debian-and-derivatives world, and Fedora on a Pi is aarch64.
+      - name: Build .rpm
+        if: matrix.rpm
+        run: |
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm --target ${{ matrix.target }} --arch ${{ matrix.rpm }} \
+            --output "unpushed-${{ matrix.rpm }}.rpm"
+          ls -la ./*.rpm
+
+      - name: Confirm the right binary went into the .rpm
+        if: matrix.rpm
+        run: |
+          # cargo-generate-rpm rewrites the asset paths for --target. If that
+          # ever stops working the package would quietly carry the host build.
+          mkdir -p rpmcheck && cd rpmcheck
+          rpm2cpio ../unpushed-${{ matrix.rpm }}.rpm | cpio -idm --quiet
+          file usr/bin/unpushed | tee /tmp/rpmarch.txt
+          grep -q 'statically linked' /tmp/rpmarch.txt
+          case "${{ matrix.rpm }}" in
+            x86_64)  grep -q 'x86-64' /tmp/rpmarch.txt ;;
+            aarch64) grep -q 'ARM aarch64' /tmp/rpmarch.txt ;;
+          esac
+
+      # Alpine. Built inside an Alpine container on the matching native
+      # runner — abuild has to run on Alpine, and cross-arch would mean
+      # emulation for no gain when the runner already matches.
+      #
+      # The package repackages the tarball from this same build rather than
+      # downloading a release, so it cannot drift from what was just produced.
+      - name: Build .apk
+        if: matrix.apk && env.ALPINE_KEY != ''
+        env:
+          ALPINE_KEY: ${{ secrets.ALPINE_ABUILD_KEY }}
+        run: |
+          mkdir -p apkbuild && cp packaging/alpine/APKBUILD.in apkbuild/
+          cp "unpushed-${{ matrix.target }}.tar.gz" apkbuild/
+          printf '%s' "$ALPINE_KEY" > apkbuild/abuild.rsa
+          docker run --rm -v "$PWD/apkbuild:/w" -e VERSION="${GITHUB_REF_NAME#v}" \
+            alpine:3.21 sh -c '
+              set -e
+              apk add --no-cache alpine-sdk >/dev/null
+              adduser -D b && addgroup b abuild
+              mkdir -p /home/b/.abuild /home/b/p
+              cp /w/abuild.rsa /home/b/.abuild/key.rsa
+              openssl rsa -in /home/b/.abuild/key.rsa -pubout \
+                -out /home/b/.abuild/key.rsa.pub 2>/dev/null
+              echo "PACKAGER_PRIVKEY=/home/b/.abuild/key.rsa" > /home/b/.abuild/abuild.conf
+              sed "s/@VERSION@/$VERSION/" /w/APKBUILD.in > /home/b/p/APKBUILD
+              # Checksums come from the tarball just built, placed where abuild
+              # looks for downloads so nothing is fetched over the network.
+              mkdir -p /var/cache/distfiles
+              cp /w/*.tar.gz /var/cache/distfiles/ || true
+              chown -R b /home/b /var/cache/distfiles
+              su b -c "cd /home/b/p && abuild checksum && abuild -r"
+              find /home/b/packages -name "*.apk" -exec cp {} /w/ \;
+            '
+          ls -la apkbuild/*.apk && cp apkbuild/*.apk .
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -151,6 +214,8 @@ jobs:
             *.tar.gz
             *.tar.gz.sha256
             *.deb
+            *.rpm
+            *.apk
           if-no-files-found: error
 
   release:
@@ -202,22 +267,31 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install tooling
-        run: sudo apt-get update && sudo apt-get install -y apt-utils
+        run: sudo apt-get update && sudo apt-get install -y apt-utils createrepo-c rpm
 
-      - name: Collect every .deb from every release
+      - name: Collect every package from every release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p site/pool/main/u/unpushed
+          mkdir -p site/pool/main/u/unpushed site/rpm
           for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
                         --json tagName --jq '.[].tagName'); do
             echo "::group::$tag"
             gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
                --pattern '*.deb' --dir site/pool/main/u/unpushed --clobber || \
                echo "no .deb in $tag"
+            # The .rpm filenames carry no version, so each release needs its
+            # own directory or they would overwrite one another.
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+               --pattern '*.rpm' --dir "site/rpm/$tag" --clobber 2>/dev/null || \
+               echo "no .rpm in $tag"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+               --pattern '*.apk' --dir "site/apk/$tag" --clobber 2>/dev/null || \
+               echo "no .apk in $tag"
             echo "::endgroup::"
           done
           ls -la site/pool/main/u/unpushed
+          ls -la site/rpm/* 2>/dev/null || true
 
       - name: Build indices
         working-directory: site
@@ -254,6 +328,57 @@ jobs:
             -o APT::FTPArchive::Release::Architectures="$(echo $arches | tr '\n' ' ')" \
             release dists/stable > dists/stable/Release
 
+      - name: Build the rpm index
+        working-directory: site
+        run: |
+          # Flatten the per-release directories; the version lives inside the
+          # package, and createrepo indexes whatever it finds.
+          mkdir -p rpm-flat
+          find rpm -name '*.rpm' -exec sh -c '
+            for f; do
+              v=$(rpm -qp --qf "%{VERSION}-%{RELEASE}.%{ARCH}" "$f" 2>/dev/null)
+              cp "$f" "rpm-flat/unpushed-$v.rpm"
+            done' sh {} +
+          rm -rf rpm && mv rpm-flat rpm
+          ls -la rpm
+          createrepo_c rpm
+
+      # Alpine. The index is signed by abuild with its own RSA key, not GPG —
+      # apk has no notion of the latter.
+      - name: Build the apk index
+        working-directory: site
+        env:
+          ALPINE_KEY: ${{ secrets.ALPINE_ABUILD_KEY }}
+        run: |
+          if [ -z "$ALPINE_KEY" ] || [ ! -d apk ]; then
+            echo "no Alpine key or no packages — skipping"
+            rm -rf apk
+            exit 0
+          fi
+          # apk repositories are laid out by architecture, and the architecture
+          # is only in the file's own metadata, so sort by what is inside.
+          mkdir -p flat && find apk -name '*.apk' -exec cp {} flat/ \;
+          rm -rf apk && mkdir -p apk
+          docker run --rm -v "$PWD:/s" -e KEY="$ALPINE_KEY" alpine:3.21 sh -c '
+            set -e
+            apk add --no-cache alpine-sdk >/dev/null
+            mkdir -p ~/.abuild && printf "%s" "$KEY" > ~/.abuild/key.rsa
+            openssl rsa -in ~/.abuild/key.rsa -pubout -out ~/.abuild/key.rsa.pub 2>/dev/null
+            echo "PACKAGER_PRIVKEY=$HOME/.abuild/key.rsa" > ~/.abuild/abuild.conf
+            cd /s
+            for f in flat/*.apk; do
+              a=$(tar -xzOf "$f" .PKGINFO 2>/dev/null | awk -F" = " "/^arch/{print \$2}")
+              [ -n "$a" ] || a=x86_64
+              mkdir -p "apk/$a" && cp "$f" "apk/$a/"
+            done
+            for d in apk/*/; do
+              ( cd "$d" && apk index -o APKINDEX.tar.gz *.apk >/dev/null && abuild-sign -q APKINDEX.tar.gz )
+            done
+            cp ~/.abuild/key.rsa.pub /s/alpine-key.rsa.pub
+          '
+          rm -rf flat
+          ls -la apk/*/ alpine-key.rsa.pub
+
       - name: Sign
         working-directory: site
         env:
@@ -266,6 +391,9 @@ jobs:
               --local-user "$key" --clearsign -o dists/stable/InRelease dists/stable/Release
           gpg --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" \
               --local-user "$key" -abs -o dists/stable/Release.gpg dists/stable/Release
+          # dnf verifies repomd.xml the same way apt verifies Release.
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" \
+              --local-user "$key" --detach-sign --armor rpm/repodata/repomd.xml
           gpg --armor --export "$key" > key.gpg
           gpg --batch --yes --delete-secret-keys "$key" || true
 
@@ -310,6 +438,60 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  aur:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Render PKGBUILD
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
+             --pattern '*linux-musl.tar.gz' --dir dl
+          x86=$(sha256sum dl/unpushed-x86_64-unknown-linux-musl.tar.gz | cut -d' ' -f1)
+          arm=$(sha256sum dl/unpushed-aarch64-unknown-linux-musl.tar.gz | cut -d' ' -f1)
+          sed -e "s/@VERSION@/${GITHUB_REF_NAME#v}/" \
+              -e "s/@LINUX_X86_SHA@/$x86/" \
+              -e "s/@LINUX_ARM_SHA@/$arm/" \
+              packaging/aur/PKGBUILD.in > PKGBUILD
+          ! grep -q '@[A-Z_]*@' PKGBUILD
+          cat PKGBUILD
+
+      - name: Generate .SRCINFO
+        run: |
+          # makepkg refuses to run as root, hence the unprivileged user.
+          docker run --rm -v "$PWD:/w" archlinux:base sh -c '
+            useradd -m b && cp /w/PKGBUILD /home/b/ && chown -R b /home/b
+            su b -c "cd /home/b && makepkg --printsrcinfo" > /w/.SRCINFO
+          '
+          cat .SRCINFO
+
+      - name: Publish to the AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::warning::AUR_SSH_KEY is not set — skipping the AUR push"
+            exit 0
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          printf 'Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  User aur\n' \
+            >> ~/.ssh/config
+          git clone ssh://aur@aur.archlinux.org/unpushed-bin.git aur
+          cp PKGBUILD .SRCINFO aur/
+          cd aur
+          git config user.name "pie-ai"
+          git config user.email "pie-ai@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet && { echo "unchanged"; exit 0; }
+          git commit -m "unpushed-bin ${GITHUB_REF_NAME#v}"
+          git push
+
   homebrew:
     needs: release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -317,23 +499,35 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Fetch macOS checksums
+      - name: Fetch checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Homebrew runs on Linux too, and the musl tarballs are statically
+          # linked, so the same artefacts serve both.
           gh release download "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
-             --pattern '*apple-darwin.tar.gz' --dir dl
-          echo "ARM_SHA=$(shasum -a 256 dl/unpushed-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
-          echo "X86_SHA=$(shasum -a 256 dl/unpushed-x86_64-apple-darwin.tar.gz  | cut -d' ' -f1)" >> "$GITHUB_ENV"
+             --pattern '*apple-darwin.tar.gz' --pattern '*linux-musl.tar.gz' --dir dl
+          sha() { shasum -a 256 "dl/unpushed-$1.tar.gz" | cut -d' ' -f1; }
+          {
+            echo "MACOS_ARM_SHA=$(sha aarch64-apple-darwin)"
+            echo "MACOS_X86_SHA=$(sha x86_64-apple-darwin)"
+            echo "LINUX_ARM_SHA=$(sha aarch64-unknown-linux-musl)"
+            echo "LINUX_X86_SHA=$(sha x86_64-unknown-linux-musl)"
+          } >> "$GITHUB_ENV"
 
       - name: Render formula
         run: |
           version="${GITHUB_REF_NAME#v}"
           sed -e "s/@VERSION@/$version/g" \
-              -e "s/@ARM_SHA@/$ARM_SHA/g" \
-              -e "s/@X86_SHA@/$X86_SHA/g" \
+              -e "s/@MACOS_ARM_SHA@/$MACOS_ARM_SHA/g" \
+              -e "s/@MACOS_X86_SHA@/$MACOS_X86_SHA/g" \
+              -e "s/@LINUX_ARM_SHA@/$LINUX_ARM_SHA/g" \
+              -e "s/@LINUX_X86_SHA@/$LINUX_X86_SHA/g" \
               packaging/homebrew/unpushed.rb.in > unpushed.rb
           cat unpushed.rb
+          # A placeholder left behind means a tarball was missing and the
+          # formula would point at nothing.
+          ! grep -q '@[A-Z_]*@' unpushed.rb
 
       - name: Push to the tap
         env:

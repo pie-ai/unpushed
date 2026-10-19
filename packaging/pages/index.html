@@ -64,7 +64,7 @@ j/k select · Enter gitui · p push · Space mark · A visible · P marked · f/
 
 <h2>Install</h2>
 
-<h3>Homebrew — macOS</h3>
+<h3>Homebrew — macOS and Linux</h3>
 <pre><code>brew tap pie-ai/unpushed
 brew install unpushed</code></pre>
 
@@ -102,6 +102,22 @@ system libgit2. Tested on Debian bookworm and trixie.</p>
 <code>arm64</code> package, a 32-bit OS the <code>armhf</code> one — apt picks the
 right one. The <code>armhf</code> build targets ARMv7, so it covers the Pi 2 and
 later. The Pi 1 and Zero are ARMv6 and are not supported.</p>
+
+<h3>Arch Linux</h3>
+<pre><code>yay -S unpushed-bin     # or paru, or makepkg -si</code></pre>
+
+<h3>Fedora, RHEL, openSUSE</h3>
+<pre><code>sudo curl -fsSLo /etc/yum.repos.d/unpushed.repo \
+  https://pie-ai.github.io/unpushed/unpushed.repo
+sudo dnf install unpushed</code></pre>
+
+<h3>Alpine</h3>
+<pre><code>sudo curl -fsSLo /etc/apk/keys/unpushed.rsa.pub \
+  https://pie-ai.github.io/unpushed/alpine-key.rsa.pub
+echo "https://pie-ai.github.io/unpushed/apk" | sudo tee -a /etc/apk/repositories
+sudo apk update &amp;&amp; sudo apk add unpushed</code></pre>
+<p class="note">apk signs its index with its own RSA key rather than GPG, which
+is why this one differs from the apt and dnf repositories.</p>
 
 <h3>Prebuilt binary — any Linux or macOS</h3>
 <pre><code>curl -fsSL https://github.com/pie-ai/unpushed/releases/latest/download/unpushed-x86_64-unknown-linux-musl.tar.gz \

@@ -1,0 +1,52 @@
+# Template rendered by .github/workflows/release.yml.
+# Contributor: pie-ai <pie-ai@users.noreply.github.com>
+# Maintainer: pie-ai <pie-ai@users.noreply.github.com>
+pkgname=unpushed
+pkgver=@VERSION@
+pkgrel=0
+pkgdesc="Overview of unpushed commits across many git checkouts"
+url="https://github.com/pie-ai/unpushed"
+# The published binaries are already statically linked against musl, which is
+# Alpine's own libc — so the release artefacts can be installed as they are
+# rather than rebuilt from source.
+arch="x86_64 aarch64 armv7"
+license="MIT OR Apache-2.0"
+# git is a hard requirement: fetch, push and rebase all run it as a subprocess.
+depends="git"
+# Alpine insists documentation, man pages and completions live in their own
+# subpackages; the default handlers pick them up from the paths below.
+subpackages="$pkgname-doc $pkgname-bash-completion:bashcomp:noarch
+	$pkgname-zsh-completion:zshcomp:noarch
+	$pkgname-fish-completion:fishcomp:noarch"
+options="!check !strip"
+
+source="unpushed-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/unpushed-x86_64-unknown-linux-musl.tar.gz
+	unpushed-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/unpushed-aarch64-unknown-linux-musl.tar.gz
+	unpushed-$pkgver-armv7.tar.gz::$url/releases/download/v$pkgver/unpushed-armv7-unknown-linux-musleabihf.tar.gz"
+
+_triple() {
+	case "$CARCH" in
+		x86_64)  echo "x86_64-unknown-linux-musl" ;;
+		aarch64) echo "aarch64-unknown-linux-musl" ;;
+		armv7)   echo "armv7-unknown-linux-musleabihf" ;;
+	esac
+}
+
+package() {
+	local d="$srcdir/unpushed-$(_triple)"
+
+	install -Dm755 "$d/unpushed"      "$pkgdir/usr/bin/unpushed"
+	# abuild rejects uncompressed man pages.
+	install -Dm644 "$d/unpushed.1"    "$pkgdir/usr/share/man/man1/unpushed.1"
+	gzip -9 "$pkgdir/usr/share/man/man1/unpushed.1"
+	install -Dm644 "$d/unpushed.bash" "$pkgdir/usr/share/bash-completion/completions/unpushed"
+	install -Dm644 "$d/_unpushed"     "$pkgdir/usr/share/zsh/site-functions/_unpushed"
+	install -Dm644 "$d/unpushed.fish" "$pkgdir/usr/share/fish/vendor_completions.d/unpushed.fish"
+	install -Dm644 "$d/LICENSE-MIT"    "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+	install -Dm644 "$d/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+	install -Dm644 "$d/README.md"      "$pkgdir/usr/share/doc/$pkgname/README.md"
+	install -Dm644 "$d/CHANGELOG.md"   "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+	install -Dm644 "$d/THIRD-PARTY-LICENSES.md" "$pkgdir/usr/share/doc/$pkgname/THIRD-PARTY-LICENSES.md"
+}
+
+sha512sums="@SHA512SUMS@"

@@ -9,11 +9,24 @@ class Unpushed < Formula
   on_macos do
     on_arm do
       url "https://github.com/pie-ai/unpushed/releases/download/v#{version}/unpushed-aarch64-apple-darwin.tar.gz"
-      sha256 "@ARM_SHA@"
+      sha256 "@MACOS_ARM_SHA@"
     end
     on_intel do
       url "https://github.com/pie-ai/unpushed/releases/download/v#{version}/unpushed-x86_64-apple-darwin.tar.gz"
-      sha256 "@X86_SHA@"
+      sha256 "@MACOS_X86_SHA@"
+    end
+  end
+
+  # Homebrew on Linux. The same statically linked musl binaries the Debian
+  # packages carry, so there is nothing to depend on.
+  on_linux do
+    on_arm do
+      url "https://github.com/pie-ai/unpushed/releases/download/v#{version}/unpushed-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "@LINUX_ARM_SHA@"
+    end
+    on_intel do
+      url "https://github.com/pie-ai/unpushed/releases/download/v#{version}/unpushed-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "@LINUX_X86_SHA@"
     end
   end
 
