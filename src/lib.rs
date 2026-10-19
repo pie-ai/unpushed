@@ -16,6 +16,7 @@
 //! - [`app`] — application state and key handling, free of terminal code.
 //! - [`highlight`] — syntax colouring for the diff view.
 //! - [`ui`] — ratatui rendering.
+//! - [`worddiff`] — what changed within a pair of diff lines.
 //! - [`tui`] — terminal setup, event loop and worker pool.
 //! - [`table`] — plain stdout rendering for non-interactive use.
 
@@ -29,3 +30,4 @@ pub mod scan;
 pub mod table;
 pub mod tui;
 pub mod ui;
+pub mod worddiff;

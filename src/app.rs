@@ -94,12 +94,32 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Normal,
+    /// Everything that can be done to one repository, with the key that does
+    /// it. Opened with Enter — a way to work before knowing the keys, and to
+    /// pick them up while doing so.
+    Menu(Menu),
     /// Typing a filter. The previous filter is kept so Esc can restore it.
     Filter {
         draft: String,
         previous: String,
     },
     Confirm(Confirm),
+}
+
+/// The action list for one repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Menu {
+    pub repo: usize,
+    pub cursor: usize,
+}
+
+/// One line of the action list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuEntry {
+    pub key: Key,
+    /// How the key is written out, since not all of them are letters.
+    pub hint: &'static str,
+    pub label: String,
 }
 
 /// A pending bulk action waiting for confirmation. Bulk pushes are the one
@@ -345,6 +365,65 @@ impl App {
         }
     }
 
+    /// What can be done to a repository, in the order the list shows it.
+    ///
+    /// Built from the state so the labels say something useful — the push
+    /// entry names the number of commits, and marking reads either way round.
+    pub fn menu_entries(&self, repo: usize) -> Vec<MenuEntry> {
+        let row = self.rows.get(repo);
+        let unpushed = row
+            .and_then(|r| r.outcome.as_ref())
+            .and_then(|o| o.status())
+            .and_then(|s| s.unpushed())
+            .unwrap_or(0);
+        let marked = row.map(|r| r.marked).unwrap_or(false);
+
+        vec![
+            MenuEntry {
+                key: Key::Right,
+                hint: "→",
+                label: if unpushed > 0 {
+                    format!("Show {unpushed} unpushed commits")
+                } else {
+                    "Show unpushed commits".to_string()
+                },
+            },
+            MenuEntry {
+                key: Key::Char('g'),
+                hint: "g",
+                label: "Open in gitui".to_string(),
+            },
+            MenuEntry {
+                key: Key::Char('p'),
+                hint: "p",
+                label: if unpushed > 0 {
+                    format!("Push ({unpushed})")
+                } else {
+                    "Push".to_string()
+                },
+            },
+            MenuEntry {
+                key: Key::Char('f'),
+                hint: "f",
+                label: "Fetch from origin".to_string(),
+            },
+            MenuEntry {
+                key: Key::Char('r'),
+                hint: "r",
+                label: "Re-read status".to_string(),
+            },
+            MenuEntry {
+                key: Key::Char(' '),
+                hint: "Space",
+                label: if marked {
+                    "Unmark for bulk push".to_string()
+                } else {
+                    "Mark for bulk push".to_string()
+                },
+            },
+        ]
+    }
+
     /// Where the keys go. Derived rather than stored, so it cannot drift from
     /// what is actually on screen.
     pub fn focus(&self) -> Focus {
@@ -521,6 +600,7 @@ impl App {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             Mode::Filter { draft, previous } => self.key_in_filter(key, draft, previous),
             Mode::Confirm(confirm) => self.key_in_confirm(key, confirm),
+            Mode::Menu(menu) => self.key_in_menu(key, menu),
             Mode::Normal => match self.focus() {
                 Focus::Diff => self.key_in_diff(key),
                 Focus::Panel => self.key_in_panel(key),
@@ -629,26 +709,27 @@ impl App {
                 }
                 Action::None
             }
-            Key::Char('r') => self.start_on_selected(Job::Scan),
             Key::Char('R') => self.start_bulk(Job::Scan, "read"),
-            Key::Char('f') => self.start_on_selected(Job::Fetch),
             Key::Char('F') => self.start_bulk(Job::Fetch, "fetch"),
-            // Enter is the primary way in — it matches the muscle memory of
-            // drilling into a repository in gitui itself. `g` stays as a
-            // second binding.
-            Key::Enter | Key::Char('g') => match self.selected() {
-                Some(index) => self.open_gitui(index),
+            // Enter lists everything that can be done to this repository,
+            // each with the key that does it.
+            Key::Enter => match self.selected() {
+                Some(repo) => {
+                    self.mode = Mode::Menu(Menu { repo, cursor: 0 });
+                    Action::None
+                }
                 None => self.warn("No row selected."),
             },
-            // Rightwards drills in, the same direction as everywhere else.
-            Key::Right | Key::Char('l') => match self.selected() {
-                Some(index) => self.open_panel(index),
-                None => self.warn("No row selected."),
-            },
-            // A single push is immediate: it affects one named repository the
-            // cursor is on. Bulk pushes are confirmed instead.
-            Key::Char('p') => match self.selected() {
-                Some(index) => self.push_row(index),
+            // Repo actions: rightwards drills in, `g` opens gitui, `p` pushes
+            // the one repository the cursor is on. Bulk pushes are confirmed
+            // instead.
+            Key::Right
+            | Key::Char('l')
+            | Key::Char('g')
+            | Key::Char('p')
+            | Key::Char('f')
+            | Key::Char('r') => match self.selected() {
+                Some(index) => self.repo_action(key, index).unwrap_or(Action::None),
                 None => self.warn("No row selected."),
             },
             Key::Char('A') => {
@@ -682,6 +763,70 @@ impl App {
             Activity::Scanning => Err(format!("{} is being read.", row.repo.name)),
             Activity::Fetching => Err(format!("{} is fetching.", row.repo.name)),
             Activity::Pushing => Err(format!("{} is pushing.", row.repo.name)),
+        }
+    }
+
+    /// The actions that apply to one repository, shared by the list, the
+    /// commit panel and the menu, so the three cannot drift apart. Returns
+    /// `None` for keys that are not repo actions.
+    fn repo_action(&mut self, key: Key, repo: usize) -> Option<Action> {
+        Some(match key {
+            Key::Right | Key::Char('l') => self.open_panel(repo),
+            Key::Char('g') => self.open_gitui(repo),
+            Key::Char('p') => self.push_row(repo),
+            Key::Char('f') => self.job_on_row(repo, Job::Fetch),
+            Key::Char('r') => self.job_on_row(repo, Job::Scan),
+            Key::Char(' ') => {
+                if let Some(row) = self.rows.get_mut(repo) {
+                    row.marked = !row.marked;
+                }
+                Action::None
+            }
+            _ => return None,
+        })
+    }
+
+    fn key_in_menu(&mut self, key: Key, menu: Menu) -> Action {
+        let entries = self.menu_entries(menu.repo);
+
+        match key {
+            Key::Esc | Key::Char('q') | Key::Left => Action::None,
+            Key::Down | Key::Char('j') => {
+                self.mode = Mode::Menu(Menu {
+                    cursor: (menu.cursor + 1).min(entries.len().saturating_sub(1)),
+                    ..menu
+                });
+                Action::None
+            }
+            Key::Up | Key::Char('k') => {
+                self.mode = Mode::Menu(Menu {
+                    cursor: menu.cursor.saturating_sub(1),
+                    ..menu
+                });
+                Action::None
+            }
+            // Enter runs whatever the cursor is on, for anyone who would
+            // rather point than type.
+            Key::Enter => match entries.get(menu.cursor) {
+                Some(entry) => self
+                    .repo_action(entry.key, menu.repo)
+                    .unwrap_or(Action::None),
+                None => Action::None,
+            },
+            // Any listed key runs its action straight away — that is how the
+            // keys get learned.
+            other => match entries.iter().find(|e| e.key == other) {
+                Some(entry) => {
+                    let action = self.repo_action(entry.key, menu.repo);
+                    action.unwrap_or(Action::None)
+                }
+                // An unlisted key leaves the menu open rather than doing
+                // something unexpected.
+                None => {
+                    self.mode = Mode::Menu(menu);
+                    Action::None
+                }
+            },
         }
     }
 
@@ -767,10 +912,13 @@ impl App {
             // then push without leaving. They target the panel's repository
             // explicitly, not the list cursor — a background refresh can move
             // that out from under the panel.
-            Key::Char('p') => self.push_row(repo),
-            Key::Enter | Key::Char('g') => self.open_gitui(repo),
-            Key::Char('f') => self.job_on_row(repo, Job::Fetch),
-            Key::Char('r') => self.job_on_row(repo, Job::Scan),
+            Key::Enter => {
+                self.mode = Mode::Menu(Menu { repo, cursor: 0 });
+                Action::None
+            }
+            Key::Char('p') | Key::Char('g') | Key::Char('f') | Key::Char('r') => {
+                self.repo_action(key, repo).unwrap_or(Action::None)
+            }
             Key::Char('q') => Action::Quit,
             _ => Action::None,
         }
@@ -897,16 +1045,6 @@ impl App {
             jobs,
         });
         Action::None
-    }
-
-    fn start_on_selected(&mut self, make: fn(usize) -> Job) -> Action {
-        match self.selected() {
-            Some(index) => match self.require_idle(index) {
-                Ok(()) => self.start(vec![make(index)]),
-                Err(reason) => self.warn(&reason),
-            },
-            None => self.warn("No row selected."),
-        }
     }
 
     /// Scan jobs for a background refresh.
@@ -1383,12 +1521,93 @@ mod tests {
         assert_eq!(app.on_key(Key::Char('g')), Action::OpenGitui(0));
     }
 
-    /// Enter is the binding the hand reaches for; `g` stays as a second one.
     #[test]
-    fn enter_opens_gitui_just_like_g() {
+    fn g_opens_gitui() {
         let mut app = app();
-        assert_eq!(app.on_key(Key::Enter), Action::OpenGitui(0));
         assert_eq!(app.on_key(Key::Char('g')), Action::OpenGitui(0));
+    }
+
+    /// Enter no longer opens gitui; it lists what can be done, with the keys.
+    #[test]
+    fn enter_opens_the_action_menu() {
+        let mut app = app();
+        assert_eq!(app.on_key(Key::Enter), Action::None);
+        match &app.mode {
+            Mode::Menu(menu) => assert_eq!(menu.repo, 0),
+            other => panic!("expected Menu, got {other:?}"),
+        }
+    }
+
+    /// The point of the menu is that it teaches: every entry carries the key
+    /// that performs it, and that key works from the list too.
+    #[test]
+    fn every_menu_entry_names_a_key_that_works_on_its_own() {
+        let mut app = app();
+        for entry in app.menu_entries(0) {
+            assert!(!entry.hint.is_empty(), "{entry:?} has no key hint");
+            // Pressing it in the list must be understood, not ignored.
+            let before = app.mode.clone();
+            let _ = app.on_key(entry.key);
+            app.mode = before;
+        }
+    }
+
+    #[test]
+    fn a_menu_key_runs_its_action_and_closes_the_menu() {
+        let mut app = app();
+        app.on_key(Key::Enter);
+        assert_eq!(app.on_key(Key::Char('g')), Action::OpenGitui(0));
+        assert_eq!(app.mode, Mode::Normal, "menu should have closed");
+    }
+
+    /// For anyone who would rather point than type.
+    #[test]
+    fn enter_in_the_menu_runs_the_entry_under_the_cursor() {
+        let mut app = app();
+        app.on_key(Key::Enter);
+        // Second entry is gitui.
+        app.on_key(Key::Down);
+        assert_eq!(app.on_key(Key::Enter), Action::OpenGitui(0));
+    }
+
+    #[test]
+    fn an_unlisted_key_leaves_the_menu_open() {
+        let mut app = app();
+        app.on_key(Key::Enter);
+        app.on_key(Key::Char('z'));
+        assert!(
+            matches!(app.mode, Mode::Menu(_)),
+            "menu closed on a stray key"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_menu_without_doing_anything() {
+        let mut app = app();
+        app.on_key(Key::Enter);
+        assert_eq!(app.on_key(Key::Esc), Action::None);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// The labels are built from the state, so they say something useful.
+    #[test]
+    fn the_menu_labels_reflect_the_repository() {
+        let app = app();
+        let entries = app.menu_entries(0);
+        let push = entries.iter().find(|e| e.key == Key::Char('p')).unwrap();
+        assert!(push.label.contains('3'), "push label: {}", push.label);
+
+        let mark = entries.iter().find(|e| e.key == Key::Char(' ')).unwrap();
+        assert!(mark.label.starts_with("Mark"), "{}", mark.label);
+    }
+
+    #[test]
+    fn the_mark_entry_reads_the_other_way_round_once_marked() {
+        let mut app = app();
+        app.rows[0].marked = true;
+        let entries = app.menu_entries(0);
+        let mark = entries.iter().find(|e| e.key == Key::Char(' ')).unwrap();
+        assert!(mark.label.starts_with("Unmark"), "{}", mark.label);
     }
 
     /// Enter is the main action key in the list, so it must not double as
@@ -1415,7 +1634,6 @@ mod tests {
             Key::Char('p'),
             Key::Char('f'),
             Key::Char('r'),
-            Key::Enter,
             Key::Char('g'),
         ] {
             let mut app = app();

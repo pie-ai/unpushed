@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row as TableRow, Table, Wrap};
 use ratatui::Frame;
 
-use crate::app::{Activity, App, Diff, Focus, Item, Level, Mode, Panel, Row, View};
+use crate::app::{Activity, App, Diff, Focus, Item, Level, Menu, Mode, Panel, Row, View};
 use crate::commits::LineKind;
 use crate::model::{Divergence, MainState, ScanOutcome, UpstreamState};
 
@@ -17,12 +17,12 @@ use crate::model::{Divergence, MainState, ScanOutcome, UpstreamState};
 fn help(app: &App) -> &'static str {
     match app.focus() {
         Focus::List => {
-            "j/k select · → commits · Enter gitui · p push · Space mark · \
+            "j/k select · Enter actions · → commits · p push · g gitui · Space mark · \
              A visible · P marked · f/F fetch · r/R refresh · / filter · a all · q quit"
         }
         Focus::Panel => {
-            "j/k move · Space fold · → open · ← back · p push · Enter gitui · \
-             f fetch · r refresh · q quit"
+            "j/k move · Space fold · → open · ← back · Enter actions · p push · \
+             g gitui · f fetch · r refresh · q quit"
         }
         Focus::Diff => "j/k · PgUp/PgDn · Home/End scroll · ← back · q quit",
     }
@@ -55,8 +55,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_footer(frame, app, footer);
 
-    if let Mode::Confirm(confirm) = &app.mode {
-        draw_confirm(frame, confirm, frame.area());
+    match &app.mode {
+        Mode::Confirm(confirm) => draw_confirm(frame, confirm, frame.area()),
+        Mode::Menu(menu) => draw_menu(frame, app, menu, frame.area()),
+        _ => {}
     }
 }
 
@@ -515,23 +517,19 @@ fn draw_diff(frame: &mut Frame, diff: &Diff, area: Rect) {
         .skip(diff.scroll)
         .take(height)
         .map(|(line, pieces)| {
-            // The marker column carries the add/remove signal; the content
-            // keeps its syntax colours, so both readings are available at once.
-            let (marker, marker_style) = match line.kind {
-                LineKind::Added => ("+", Style::default().fg(Color::Green)),
-                LineKind::Removed => ("-", Style::default().fg(Color::Red)),
-                LineKind::Context => (" ", Style::default()),
-                LineKind::Header => ("", Style::default()),
+            // A one-character gutter rather than a coloured marker: the line
+            // colour already says added or removed, and `+`/`-` in front of
+            // code makes it harder to read against the original.
+            let gutter = match line.kind {
+                LineKind::Added => "+ ",
+                LineKind::Removed => "- ",
+                LineKind::Context => "  ",
+                LineKind::Header => "",
             };
-
-            if line.kind == LineKind::Header {
-                return Line::from(Span::styled(
-                    line.text.clone(),
-                    Style::default().fg(Color::Cyan),
-                ));
-            }
-
-            let mut spans = vec![Span::styled(marker.to_string(), marker_style)];
+            let mut spans = vec![Span::styled(
+                gutter.to_string(),
+                Style::default().fg(Color::DarkGray),
+            )];
             for (style, text) in pieces {
                 spans.push(Span::styled(text.clone(), *style));
             }
@@ -568,6 +566,70 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     )));
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Everything that can be done to one repository, each with its key.
+fn draw_menu(frame: &mut Frame, app: &App, menu: &Menu, area: Rect) {
+    let entries = app.menu_entries(menu.repo);
+    let name = app
+        .rows
+        .get(menu.repo)
+        .map(|r| r.repo.name.as_str())
+        .unwrap_or("?");
+
+    // The key column is sized to the widest hint, so the labels line up and
+    // the keys read as a column you can learn.
+    let key_width = entries
+        .iter()
+        .map(|e| e.hint.chars().count())
+        .max()
+        .unwrap_or(1);
+    let width = entries
+        .iter()
+        .map(|e| key_width + e.label.chars().count() + 8)
+        .max()
+        .unwrap_or(30)
+        .max(name.chars().count() + 6) as u16;
+    // Two border rows, a blank above and below the entries, and the Esc line.
+    let height = entries.len() as u16 + 5;
+    let popup = centered(width.min(area.width), height.min(area.height), area);
+
+    let mut lines = vec![Line::from("")];
+    for (index, entry) in entries.iter().enumerate() {
+        let selected = index == menu.cursor;
+        let base = if selected {
+            Style::default()
+                .bg(Color::Indexed(238))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  ", base),
+            Span::styled(
+                format!("{:<key_width$}", entry.hint),
+                base.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   ", base),
+            Span::styled(entry.label.clone(), base),
+            Span::styled("  ", base),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Esc  close",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {name} ")),
+        ),
+        popup,
+    );
 }
 
 fn draw_confirm(frame: &mut Frame, confirm: &crate::app::Confirm, area: Rect) {

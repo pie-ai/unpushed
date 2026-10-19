@@ -283,12 +283,6 @@ fn the_spinner_frame_changes_between_ticks() {
     assert_ne!(first, second, "the spinner should have advanced");
 }
 
-#[test]
-fn the_help_line_offers_enter_for_gitui() {
-    let out = screen(&app(), 120, 12);
-    assert!(out.contains("Enter gitui"), "{out}");
-}
-
 fn commit(id: &str, summary: &str, files: &[(&str, Status)]) -> Commit {
     Commit {
         short_id: id.into(),
@@ -445,16 +439,12 @@ fn the_diff_marks_added_and_removed_lines() {
     let out = screen(&app, 140, 14);
     assert!(out.contains("backend-api · a3f21c · main.rs"), "{out}");
     assert!(out.contains("@@ -1,2 +1,2 @@"), "{out}");
-    assert!(
-        out.lines()
-            .any(|l| l.trim_start().starts_with("-    let x = 1;")),
-        "{out}"
-    );
-    assert!(
-        out.lines()
-            .any(|l| l.trim_start().starts_with("+    let x = 2;")),
-        "{out}"
-    );
+    // The gutter marks the line; the colour carries the signal, which the
+    // unit tests in `highlight` check.
+    let removed = out.lines().find(|l| l.contains("let x = 1;")).unwrap();
+    let added = out.lines().find(|l| l.contains("let x = 2;")).unwrap();
+    assert!(removed.trim_start().starts_with('-'), "{removed:?}");
+    assert!(added.trim_start().starts_with('+'), "{added:?}");
 }
 
 /// The diff needs the width; half a terminal makes it unreadable.
@@ -513,4 +503,56 @@ fn the_help_line_follows_the_focus() {
         }],
     );
     assert!(screen(&diff, 150, 14).contains("PgUp/PgDn"));
+}
+
+#[test]
+fn the_menu_lists_every_action_with_its_key() {
+    let mut app = app();
+    app.on_key(Key::Enter);
+    let out = screen(&app, 120, 20);
+
+    assert!(out.contains("backend-api"), "{out}");
+    for (key, label) in [
+        ("→", "Show"),
+        ("g", "Open in gitui"),
+        ("p", "Push"),
+        ("f", "Fetch"),
+        ("r", "Re-read"),
+        ("Space", "Mark"),
+    ] {
+        let row = out
+            .lines()
+            .find(|l| l.contains(label))
+            .unwrap_or_else(|| panic!("no entry for {label:?} in:\n{out}"));
+        assert!(
+            row.contains(key),
+            "{label:?} does not show its key: {row:?}"
+        );
+    }
+    assert!(out.contains("Esc"), "{out}");
+}
+
+/// The push entry says how much it would push, so the menu is a status too.
+#[test]
+fn the_menu_says_how_much_there_is_to_push() {
+    let mut app = app();
+    app.on_key(Key::Enter);
+    let out = screen(&app, 120, 20);
+    assert!(out.contains("Push (3)"), "{out}");
+    assert!(out.contains("3 unpushed commits"), "{out}");
+}
+
+#[test]
+fn the_menu_closes_again() {
+    let mut app = app();
+    app.on_key(Key::Enter);
+    assert!(screen(&app, 120, 20).contains("Open in gitui"));
+    app.on_key(Key::Esc);
+    assert!(!screen(&app, 120, 20).contains("Open in gitui"));
+}
+
+#[test]
+fn the_help_line_offers_enter_for_the_action_list() {
+    let out = screen(&app(), 150, 14);
+    assert!(out.contains("Enter actions"), "{out}");
 }

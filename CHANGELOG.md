@@ -15,9 +15,19 @@ While the version is below 1.0, breaking changes may land in minor releases.
   or fewer come open, larger ones stay shut and report how many they hold.
   `Space` folds a commit, `←` walks back out. Push, fetch and gitui keep working
   while the tree is open and act on the repository it belongs to.
-- `→` on a file shows its diff with syntax highlighting. The marker column
-  carries the add/remove signal and the content keeps its language colours, so
-  both readings are available at once.
+- `→` on a file shows its diff. Three readings sit on top of each other, in
+  order of how quickly they need to register: the whole line is green or red for
+  added or removed; the words that actually changed within it are brightened and
+  emboldened, so a one-word edit in a long line is not a hunt; and syntax
+  colouring is applied to context lines, where the first two do not apply.
+- `Enter` lists everything that can be done to a repository, each with the key
+  that does it. Pressing the key runs the action and closes the list — a way to
+  work before knowing the keys, and to learn them while doing so.
+
+### Changed
+
+- `Enter` no longer opens GitUI; `g` still does. Enter now opens the action
+  list, which is where `g` is written down.
 
 ## [0.2.1] - 2026-10-19
 

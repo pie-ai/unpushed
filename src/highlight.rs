@@ -1,4 +1,17 @@
-//! Syntax highlighting for the diff view.
+//! Turning a diff into coloured lines.
+//!
+//! Three readings are laid on top of each other, in order of how quickly they
+//! need to register:
+//!
+//! 1. **Added or removed** — the whole line is green or red. This is what you
+//!    scan for, so nothing is allowed to compete with it. An earlier version
+//!    coloured only a one-character marker and left the content in syntax
+//!    colours; added, removed and context lines then looked alike at a glance.
+//! 2. **What changed inside the line** — the differing words are brightened
+//!    and emboldened, so a one-word edit in a long line is not a hunt.
+//! 3. **Language** — syntax colouring, but only on context lines, where the
+//!    first two readings do not apply. That keeps the surrounding code easy to
+//!    follow without muddying the signal.
 //!
 //! The syntax and theme sets are loaded once on first use, not at startup:
 //! they cost both time and a few megabytes, and most sessions never open a
@@ -10,7 +23,7 @@
 
 use std::sync::OnceLock;
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
@@ -40,35 +53,90 @@ fn highlighter() -> &'static Highlighter {
 /// A diff line broken into coloured pieces.
 pub type Highlighted = Vec<(Style, String)>;
 
-/// Colours the content of each diff line according to the file's language.
-///
-/// Returns one entry per input line, in the same order.
+/// Renders every line of a diff, in the same order.
 pub fn diff(path: &str, lines: &[DiffLine]) -> Vec<Highlighted> {
     let h = highlighter();
     let syntax = syntax_for(h, path);
-
-    // Two independent states: a diff interleaves the before and after
-    // versions, and feeding both through one parser leaves it in a state that
-    // belongs to neither. Removed lines continue the "before" file, added
-    // lines the "after"; context lines belong to both and advance each.
-    let mut before = HighlightLines::new(syntax, &h.theme);
-    let mut after = HighlightLines::new(syntax, &h.theme);
+    let mut context = HighlightLines::new(syntax, &h.theme);
+    let word_ranges = intra_line_changes(lines);
 
     lines
         .iter()
-        .map(|line| match line.kind {
-            // Headers are not code and would only confuse the parser.
-            LineKind::Header => vec![(Style::default(), line.text.clone())],
-            LineKind::Removed => colour(&mut before, h, &line.text),
-            LineKind::Added => colour(&mut after, h, &line.text),
-            LineKind::Context => {
-                let rendered = colour(&mut before, h, &line.text);
-                // Keep the other state moving too, so it stays in step.
-                let _ = colour(&mut after, h, &line.text);
-                rendered
+        .enumerate()
+        .map(|(index, line)| match line.kind {
+            LineKind::Header => vec![(Style::default().fg(Color::Cyan), line.text.clone())],
+            LineKind::Context => colour(&mut context, h, &line.text),
+            LineKind::Removed => {
+                marked(&line.text, &word_ranges[index], Color::Red, Color::LightRed)
             }
+            LineKind::Added => marked(
+                &line.text,
+                &word_ranges[index],
+                Color::Green,
+                Color::LightGreen,
+            ),
         })
         .collect()
+}
+
+/// Splits a line into plain and emphasised pieces.
+fn marked(text: &str, ranges: &crate::worddiff::Ranges, base: Color, accent: Color) -> Highlighted {
+    let plain = Style::default().fg(base);
+    if ranges.is_empty() {
+        return vec![(plain, text.to_string())];
+    }
+    let strong = Style::default().fg(accent).add_modifier(Modifier::BOLD);
+
+    let mut out = Vec::new();
+    let mut at = 0;
+    for range in ranges {
+        if range.start > at {
+            out.push((plain, text[at..range.start].to_string()));
+        }
+        out.push((strong, text[range.clone()].to_string()));
+        at = range.end;
+    }
+    if at < text.len() {
+        out.push((plain, text[at..].to_string()));
+    }
+    out
+}
+
+/// Pairs removed lines with the added ones that replaced them and works out
+/// which words differ.
+///
+/// Runs of removed lines are followed by runs of added ones; pairing them in
+/// order is what git itself does when it shows a replacement. Where the runs
+/// are of different lengths the surplus lines have no counterpart and stay
+/// plain — a line that was only added or only removed has nothing to compare
+/// against.
+fn intra_line_changes(lines: &[DiffLine]) -> Vec<crate::worddiff::Ranges> {
+    let mut ranges: Vec<crate::worddiff::Ranges> = vec![Vec::new(); lines.len()];
+    let mut index = 0;
+
+    while index < lines.len() {
+        if lines[index].kind != LineKind::Removed {
+            index += 1;
+            continue;
+        }
+        let removed_from = index;
+        while index < lines.len() && lines[index].kind == LineKind::Removed {
+            index += 1;
+        }
+        let added_from = index;
+        while index < lines.len() && lines[index].kind == LineKind::Added {
+            index += 1;
+        }
+
+        let pairs = (added_from - removed_from).min(index - added_from);
+        for offset in 0..pairs {
+            let (old, new) = (removed_from + offset, added_from + offset);
+            let (a, b) = crate::worddiff::ranges(&lines[old].text, &lines[new].text);
+            ranges[old] = a;
+            ranges[new] = b;
+        }
+    }
+    ranges
 }
 
 fn syntax_for<'a>(h: &'a Highlighter, path: &str) -> &'a SyntaxReference {
@@ -193,12 +261,79 @@ mod tests {
         assert_eq!(out.len(), 1);
     }
 
-    /// Headers are not code; colouring them would feed junk to the parser.
+    /// Headers are not code; they get their own colour rather than being fed
+    /// to the syntax parser.
     #[test]
-    fn headers_are_left_uncoloured() {
+    fn headers_get_their_own_colour() {
         let lines = vec![line(LineKind::Header, "@@ -1,3 +1,3 @@")];
         let out = diff("main.rs", &lines);
         assert_eq!(out[0].len(), 1);
-        assert_eq!(out[0][0].0.fg, None);
+        assert_eq!(out[0][0].0.fg, Some(Color::Cyan));
+    }
+
+    /// The reading that has to register first: a glance must separate added
+    /// from removed from context.
+    #[test]
+    fn added_and_removed_lines_are_coloured_whole() {
+        let lines = vec![
+            line(LineKind::Removed, "let x = 1;"),
+            line(LineKind::Added, "let y = 2;"),
+        ];
+        let out = diff("main.rs", &lines);
+        assert!(out[0]
+            .iter()
+            .all(|(s, _)| matches!(s.fg, Some(Color::Red) | Some(Color::LightRed))));
+        assert!(out[1]
+            .iter()
+            .all(|(s, _)| matches!(s.fg, Some(Color::Green) | Some(Color::LightGreen))));
+    }
+
+    #[test]
+    fn the_changed_words_are_picked_out_within_the_line() {
+        let lines = vec![
+            line(LineKind::Removed, "fn parse() -> Result<Config, Error> {"),
+            line(
+                LineKind::Added,
+                "fn parse() -> Result<Config, ParseError> {",
+            ),
+        ];
+        let out = diff("main.rs", &lines);
+
+        let strong: Vec<&str> = out[1]
+            .iter()
+            .filter(|(s, _)| s.add_modifier.contains(Modifier::BOLD))
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert_eq!(strong, vec!["ParseError"], "whole line was: {:?}", out[1]);
+    }
+
+    /// Context lines are where syntax colouring still earns its place.
+    #[test]
+    fn context_lines_keep_their_language_colours() {
+        let lines = vec![line(LineKind::Context, "fn main() { let x = 1; }")];
+        let out = diff("main.rs", &lines);
+        assert!(out[0].len() > 1, "not split into tokens: {:?}", out[0]);
+        let colours: std::collections::HashSet<_> =
+            out[0].iter().filter_map(|(s, _)| s.fg).collect();
+        assert!(colours.len() > 1, "only one colour: {colours:?}");
+    }
+
+    /// Runs of unequal length have surplus lines with no counterpart; those
+    /// must stay plain rather than being compared to the wrong line.
+    #[test]
+    fn unpaired_lines_are_left_without_word_marks() {
+        let lines = vec![
+            line(LineKind::Removed, "only removed"),
+            line(LineKind::Added, "only removed"),
+            line(LineKind::Added, "an extra line"),
+        ];
+        let out = diff("main.rs", &lines);
+        assert!(
+            out[2]
+                .iter()
+                .all(|(s, _)| !s.add_modifier.contains(Modifier::BOLD)),
+            "surplus line was marked: {:?}",
+            out[2]
+        );
     }
 }

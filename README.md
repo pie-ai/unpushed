@@ -90,7 +90,8 @@ scanned.
 | `j`/`k`, `↑`/`↓` | move the selection |
 | `→`, `l` | open the commit tree; again on a file opens its diff |
 | `←`, `h`, `Esc` | back one level |
-| `Enter` (or `g`) | open GitUI in the repository |
+| `Enter` | list everything that can be done here, with its key |
+| `g` | open GitUI in the repository |
 | `Space` | mark a row |
 | `p` | push the selected repository |
 | `A` | push every **visible** repository (asks first) |
@@ -101,9 +102,14 @@ scanned.
 | `a` | show all repositories, not just those needing attention |
 | `q` | quit |
 
-`Enter` requires [gitui](https://github.com/gitui-org/gitui) on your `PATH`;
-without it the row simply reports that it is missing. Quitting gitui returns you
-to the list with the same row selected, ready for `p`.
+`Enter` opens a list of everything that can be done to the repository under the
+cursor, each with the key that does it. Pressing that key runs the action and
+closes the list — a way to work before knowing the keys, and to pick them up
+while doing so.
+
+`g` requires [gitui](https://github.com/gitui-org/gitui) on your `PATH`; without
+it the row simply reports that it is missing. Quitting gitui returns you to the
+list with the same row selected, ready for `p`.
 
 While a repository is being fetched, read or pushed, its row shows a spinner and
 says what it is doing, and every key that would touch that repository is refused
