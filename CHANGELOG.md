@@ -8,6 +8,8 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-19
+
 ### Added
 
 - Builds for `armv7-unknown-linux-musleabihf`, published as a tarball and as an
@@ -17,7 +19,6 @@ While the version is below 1.0, breaking changes may land in minor releases.
 - A row that is being read, fetched or pushed shows a spinner, says what it is
   doing, and is dimmed. Pushing takes seconds, and until now the only sign of it
   was a status character that did not move.
-
 - The list refreshes itself every few seconds, so changes made in another
   window appear without pressing a key. Background refreshes are silent: no
   spinner, no lock, busy rows skipped. `--refresh SECONDS` tunes the interval,
@@ -73,5 +74,6 @@ First release.
 - Plain table output (`-T`), used automatically when stdout is not a terminal.
 - Man page and shell completions for bash, zsh and fish.
 
-[Unreleased]: https://github.com/pie-ai/unpushed/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pie-ai/unpushed/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pie-ai/unpushed/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pie-ai/unpushed/releases/tag/v0.1.0
