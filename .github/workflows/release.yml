@@ -219,27 +219,9 @@ jobs:
           gpg --batch --yes --delete-secret-keys "$key" || true
 
       - name: Landing page
-        working-directory: site
-        run: |
-          cat > index.html <<'HTML'
-          <!doctype html>
-          <meta charset="utf-8">
-          <title>unpushed — apt repository</title>
-          <style>body{font-family:system-ui,sans-serif;max-width:48rem;margin:3rem auto;padding:0 1rem;line-height:1.5}
-          pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:4px}</style>
-          <h1>unpushed</h1>
-          <p>Overview of unpushed commits across many git checkouts —
-             <a href="https://github.com/pie-ai/unpushed">source and releases</a>.</p>
-          <h2>Install on Debian or Ubuntu</h2>
-          <pre>curl -fsSL https://pie-ai.github.io/unpushed/key.gpg \
-            | sudo tee /etc/apt/keyrings/unpushed.asc &gt; /dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/unpushed.asc] \
-            https://pie-ai.github.io/unpushed stable main" \
-            | sudo tee /etc/apt/sources.list.d/unpushed.list
-          sudo apt update &amp;&amp; sudo apt install unpushed</pre>
-          <p>Packages are built for <code>amd64</code> and <code>arm64</code> and are
-             statically linked, so they carry no dependency on a system libgit2.</p>
-          HTML
+        # Kept as a real file so it can be edited and reviewed like anything
+        # else, instead of living as a heredoc inside this workflow.
+        run: cp packaging/pages/index.html site/index.html
 
       - uses: actions/upload-pages-artifact@v3
         with:

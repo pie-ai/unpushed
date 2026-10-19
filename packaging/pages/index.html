@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>unpushed — overview of unpushed commits across many git checkouts</title>
+<meta name="description" content="A terminal interface over every git checkout one level below a directory: what is not pushed, what is dirty, and push from the list.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1a1a1a; --muted: #5a5a5a; --bg: #ffffff;
+    --code-bg: #f4f4f5; --border: #e4e4e7; --link: #0b5fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e8e8ea; --muted: #9a9aa2; --bg: #16161a;
+      --code-bg: #1f1f25; --border: #2e2e36; --link: #7aa2ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem 5rem;
+    line-height: 1.6; color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 2rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.15rem; margin: 2.5rem 0 .75rem; letter-spacing: -.01em; }
+  h3 { font-size: .95rem; margin: 1.5rem 0 .5rem; color: var(--muted); font-weight: 600; }
+  .lede { color: var(--muted); font-size: 1.05rem; margin: 0 0 1.5rem; }
+  a { color: var(--link); }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    padding: .9rem 1rem; overflow-x: auto; border-radius: 6px;
+    font-size: .85rem; line-height: 1.5; margin: .5rem 0;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  p code { background: var(--code-bg); padding: .1rem .35rem; border-radius: 3px; font-size: .9em; }
+  .screen { font-size: .8rem; }
+  .note { color: var(--muted); font-size: .9rem; }
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .9rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; margin: .5rem 0; }
+  th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+</style>
+
+<h1>unpushed</h1>
+<p class="lede">Overview of unpushed commits across many git checkouts.</p>
+
+<p>GitUI and friends work on one repository at a time. <code>unpushed</code> sits a
+level above: point it at the directory that holds your checkouts and it shows, for
+all of them at once, what is not pushed yet and what is dirty — and lets you push
+from the list.</p>
+
+<pre class="screen">2 need work · 44 clean · 0 failed   (47 repos, 2 visible)
+/home/you/src
+
+      Repo          Branch         Upstream     Main
+   ↑  backend-api   feature/login  no upstream  ↑3
+   ⚠  shared-lib    main           —            on default  ⚠ 2 modified
+
+j/k select · Space mark · p push · A visible · P marked · g gitui · f/F fetch · …</pre>
+
+<p class="note">Only one level is searched. Point it at the directory that
+<em>holds</em> the checkouts, not at the root of a tree.</p>
+
+<h2>Install</h2>
+
+<h3>Homebrew — macOS</h3>
+<pre><code>brew tap pie-ai/unpushed
+brew install unpushed</code></pre>
+
+<p>Or in a single command, without tapping first:</p>
+<pre><code>brew install pie-ai/unpushed/unpushed</code></pre>
+
+<p>Upgrading and removing:</p>
+<pre><code>brew upgrade unpushed
+brew uninstall unpushed
+brew untap pie-ai/unpushed</code></pre>
+
+<p>In a <code>Brewfile</code>, for machine setup:</p>
+<pre><code>tap "pie-ai/unpushed"
+brew "unpushed"</code></pre>
+
+<p class="note">The formula installs a prebuilt binary, so there is nothing to
+compile and no Rust toolchain needed. Apple silicon and Intel are both covered.
+<code>gitui</code> is optional — the <code>g</code> key opens it when present.</p>
+
+<h3>apt — Debian and Ubuntu</h3>
+<pre><code>curl -fsSL https://pie-ai.github.io/unpushed/key.gpg \
+  | sudo tee /etc/apt/keyrings/unpushed.asc &gt; /dev/null
+
+echo "deb [signed-by=/etc/apt/keyrings/unpushed.asc] \
+  https://pie-ai.github.io/unpushed stable main" \
+  | sudo tee /etc/apt/sources.list.d/unpushed.list
+
+sudo apt update &amp;&amp; sudo apt install unpushed</code></pre>
+
+<p class="note">Packages are built for <code>amd64</code> and <code>arm64</code> and
+are statically linked, so they carry no dependency on a system libgit2. Tested on
+Debian bookworm and trixie.</p>
+
+<h3>Prebuilt binary — any Linux or macOS</h3>
+<pre><code>curl -fsSL https://github.com/pie-ai/unpushed/releases/latest/download/unpushed-x86_64-unknown-linux-musl.tar.gz \
+  | tar xz
+sudo install -m 755 unpushed-x86_64-unknown-linux-musl/unpushed /usr/local/bin/</code></pre>
+
+<table>
+  <tr><th>Platform</th><th>Archive</th></tr>
+  <tr><td>Linux x86_64</td><td><code>unpushed-x86_64-unknown-linux-musl.tar.gz</code></td></tr>
+  <tr><td>Linux aarch64</td><td><code>unpushed-aarch64-unknown-linux-musl.tar.gz</code></td></tr>
+  <tr><td>macOS Apple silicon</td><td><code>unpushed-aarch64-apple-darwin.tar.gz</code></td></tr>
+  <tr><td>macOS Intel</td><td><code>unpushed-x86_64-apple-darwin.tar.gz</code></td></tr>
+</table>
+
+<p class="note">Every archive carries the binary, a man page, shell completions for
+bash, zsh and fish, and the licenses. Checksums are published as
+<code>SHA256SUMS</code> with each
+<a href="https://github.com/pie-ai/unpushed/releases">release</a>.</p>
+
+<h3>From source</h3>
+<pre><code>cargo install --git https://github.com/pie-ai/unpushed</code></pre>
+<p class="note">Needs Rust 1.88 or newer.</p>
+
+<h2>Using it</h2>
+<pre><code>unpushed                  # current directory
+unpushed ~/src/checkouts  # explicit directory
+unpushed -T               # plain table instead of the interface</code></pre>
+
+<table>
+  <tr><th>Key</th><th>Action</th></tr>
+  <tr><td><code>j</code>/<code>k</code>, <code>↑</code>/<code>↓</code></td><td>move the selection</td></tr>
+  <tr><td><code>Space</code></td><td>mark a row</td></tr>
+  <tr><td><code>p</code></td><td>push the selected repository</td></tr>
+  <tr><td><code>A</code> / <code>P</code></td><td>push every visible / marked repository</td></tr>
+  <tr><td><code>g</code></td><td>open GitUI in the repository</td></tr>
+  <tr><td><code>f</code> / <code>F</code></td><td>fetch selected / all visible</td></tr>
+  <tr><td><code>/</code></td><td>filter by branch or name</td></tr>
+  <tr><td><code>a</code></td><td>show all repositories</td></tr>
+  <tr><td><code>q</code></td><td>quit</td></tr>
+</table>
+
+<p>Push fetches the repository first, refuses when the branch is behind
+<code>origin/&lt;branch&gt;</code> rather than forcing, and uses an explicit refspec
+so a wrong upstream cannot send commits to the wrong remote branch.</p>
+
+<footer>
+  <a href="https://github.com/pie-ai/unpushed">Source and releases on GitHub</a> ·
+  MIT or Apache-2.0
+</footer>
+</html>
