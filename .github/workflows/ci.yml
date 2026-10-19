@@ -20,7 +20,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -46,23 +46,30 @@ jobs:
   no-leaks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Check for identifiers that should not be public
-        env:
-          FORBIDDEN: ${{ secrets.FORBIDDEN_PATTERNS }}
+      # Shape-based: runs on every event, including pull requests from forks.
+      # Needs no secret, so there is nothing here a fork could reach for.
+      - name: Check for ticket-shaped ids and absolute home paths
         run: |
           paths="src tests README.md CONTRIBUTING.md Cargo.toml build.rs"
-
-          # Ticket-shaped ids and absolute home paths leak context even when no
-          # name is attached to them.
           if grep -rnE '\b[A-Z]{2,6}-[0-9]{4,}\b|/Users/[a-z]' $paths; then
             echo "::error::ticket-shaped identifier or absolute home path found"
             exit 1
           fi
 
+      # The project-specific list is a secret because it names the very things
+      # being kept out. Restricted to `push` on purpose: the step greps with the
+      # pattern and prints what matches, so running it on pull requests would
+      # hand an attacker an oracle for recovering the pattern itself.
+      - name: Check for project-specific identifiers
+        if: github.event_name == 'push'
+        env:
+          FORBIDDEN: ${{ secrets.FORBIDDEN_PATTERNS }}
+        run: |
+          paths="src tests README.md CONTRIBUTING.md Cargo.toml build.rs"
           if [ -z "$FORBIDDEN" ]; then
-            echo "FORBIDDEN_PATTERNS not set — shape checks only"
+            echo "::warning::FORBIDDEN_PATTERNS is not set — shape checks only"
             exit 0
           fi
           if grep -rniE "$FORBIDDEN" $paths; then

@@ -14,6 +14,8 @@ First release.
 
 ### Added
 
+- Shell completions for bash, zsh and fish, and a man page, both generated from
+  the command line definition.
 - Terminal interface listing every git checkout one level below a directory,
   with branch, distance from the upstream, distance from the remote default
   branch, and working tree state.
