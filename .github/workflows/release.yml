@@ -221,19 +221,36 @@ jobs:
       - name: Build indices
         working-directory: site
         run: |
-          for arch in amd64 arm64; do
+          # Derived from what is actually in the pool rather than hard-coded.
+          # A hard-coded list silently drops a new architecture: armhf shipped
+          # in v0.2.0 as a release asset but never reached the indices, so apt
+          # on a 32-bit Pi found nothing.
+          arches=$(ls pool/main/u/unpushed/*.deb \
+                   | sed -E 's/.*_([a-z0-9-]+)\.deb$/\1/' | sort -u)
+          echo "architectures in pool: $arches"
+          [ -n "$arches" ] || { echo "::error::no packages in pool"; exit 1; }
+
+          for arch in $arches; do
             mkdir -p "dists/stable/main/binary-$arch"
             apt-ftparchive --arch "$arch" packages pool \
               > "dists/stable/main/binary-$arch/Packages"
             gzip -9kf "dists/stable/main/binary-$arch/Packages"
+            # An architecture with packages in the pool but nothing in its
+            # index means the mapping broke; better to fail than to publish a
+            # repository that quietly lacks one.
+            grep -q '^Package:' "dists/stable/main/binary-$arch/Packages" || {
+              echo "::error::no entries indexed for $arch"
+              exit 1
+            }
           done
+
           apt-ftparchive \
             -o APT::FTPArchive::Release::Origin=unpushed \
             -o APT::FTPArchive::Release::Label=unpushed \
             -o APT::FTPArchive::Release::Suite=stable \
             -o APT::FTPArchive::Release::Codename=stable \
             -o APT::FTPArchive::Release::Components=main \
-            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            -o APT::FTPArchive::Release::Architectures="$(echo $arches | tr '\n' ' ')" \
             release dists/stable > dists/stable/Release
 
       - name: Sign

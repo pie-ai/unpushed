@@ -8,6 +8,14 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- The apt repository now indexes every architecture found in its pool instead
+  of a hard-coded pair. The `armhf` package shipped as a release asset in 0.2.0
+  but never reached the indices, so `apt install` on a 32-bit Raspberry Pi found
+  nothing. The publish step also fails now if an architecture has packages but
+  no index entries.
+
 ## [0.2.0] - 2026-10-19
 
 ### Added
