@@ -1,0 +1,292 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # The apt repository is derived entirely from the releases, so it can be
+  # rebuilt at any time without cutting a new version.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Without this the .deb and the Homebrew formula would carry a different
+  # version than the release they belong to.
+  check-version:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the version in Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          echo "tag=$tag  Cargo.toml=$crate"
+          [ "$tag" = "$crate" ] || {
+            echo "::error::tag v$tag does not match Cargo.toml version $crate"
+            exit 1
+          }
+
+  build:
+    needs: check-version
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            deb: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            deb: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # Intel macOS now only exists as a large runner; its billing differs
+          # from the standard runners.
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # libgit2 is compiled in via the vendored-libgit2 feature, using the `cc`
+      # crate rather than cmake — a musl C compiler is all it needs.
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Verify the binary is self-contained
+        if: contains(matrix.target, 'musl')
+        run: |
+          file target/${{ matrix.target }}/release/unpushed
+          ldd  target/${{ matrix.target }}/release/unpushed 2>&1 | tee /tmp/ldd.txt || true
+          grep -q 'not a dynamic executable\|statically linked' /tmp/ldd.txt || {
+            echo "::error::binary is not statically linked"
+            exit 1
+          }
+
+      - name: Smoke test
+        # Runs natively on every matrix entry: all four targets match their runner.
+        run: target/${{ matrix.target }}/release/unpushed --version
+
+      - name: Package tarball
+        run: |
+          staging="unpushed-${{ matrix.target }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/unpushed" "$staging/"
+          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES.md "$staging/"
+          cp man/unpushed.1 "$staging/"
+          cp completions/unpushed.bash completions/_unpushed completions/unpushed.fish "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+          shasum -a 256 "$staging.tar.gz" | tee "$staging.tar.gz.sha256"
+
+      - name: Build .deb
+        if: matrix.deb
+        run: |
+          cargo install cargo-deb --locked
+          # --no-build reuses the binary built above; cargo-deb rewrites the
+          # target/release/ asset paths for the selected target.
+          cargo deb --target ${{ matrix.target }} --no-build --output .
+          ls -la ./*.deb
+          dpkg-deb -I ./*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+            *.deb
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect checksums
+        working-directory: artifacts
+        run: |
+          shasum -a 256 ./*.tar.gz ./*.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Anything that is not a plain vX.Y.Z tag is published as a
+          # pre-release — that is how the throwaway first run stays harmless.
+          prerelease=""
+          case "${GITHUB_REF_NAME}" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) prerelease="--prerelease" ;;
+          esac
+          [ "${GITHUB_REF_NAME}" = "v0.0.1" ] && prerelease="--prerelease"
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            $prerelease \
+            artifacts/*
+
+  apt:
+    needs: release
+    # Also runnable on its own: the repository is a projection of the releases,
+    # so a workflow_dispatch rebuilds it from scratch.
+    if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: sudo apt-get update && sudo apt-get install -y apt-utils
+
+      - name: Collect every .deb from every release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p site/pool/main/u/unpushed
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 \
+                        --json tagName --jq '.[].tagName'); do
+            echo "::group::$tag"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+               --pattern '*.deb' --dir site/pool/main/u/unpushed --clobber || \
+               echo "no .deb in $tag"
+            echo "::endgroup::"
+          done
+          ls -la site/pool/main/u/unpushed
+
+      - name: Build indices
+        working-directory: site
+        run: |
+          for arch in amd64 arm64; do
+            mkdir -p "dists/stable/main/binary-$arch"
+            apt-ftparchive --arch "$arch" packages pool \
+              > "dists/stable/main/binary-$arch/Packages"
+            gzip -9kf "dists/stable/main/binary-$arch/Packages"
+          done
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin=unpushed \
+            -o APT::FTPArchive::Release::Label=unpushed \
+            -o APT::FTPArchive::Release::Suite=stable \
+            -o APT::FTPArchive::Release::Codename=stable \
+            -o APT::FTPArchive::Release::Components=main \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            release dists/stable > dists/stable/Release
+
+      - name: Sign
+        working-directory: site
+        env:
+          APT_GPG_SUBKEY: ${{ secrets.APT_GPG_SUBKEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          echo "$APT_GPG_SUBKEY" | gpg --batch --import
+          key="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" \
+              --local-user "$key" --clearsign -o dists/stable/InRelease dists/stable/Release
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$APT_GPG_PASSPHRASE" \
+              --local-user "$key" -abs -o dists/stable/Release.gpg dists/stable/Release
+          gpg --armor --export "$key" > key.gpg
+          gpg --batch --yes --delete-secret-keys "$key" || true
+
+      - name: Landing page
+        working-directory: site
+        run: |
+          cat > index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>unpushed — apt repository</title>
+          <style>body{font-family:system-ui,sans-serif;max-width:48rem;margin:3rem auto;padding:0 1rem;line-height:1.5}
+          pre{background:#f4f4f4;padding:1rem;overflow-x:auto;border-radius:4px}</style>
+          <h1>unpushed</h1>
+          <p>Overview of unpushed commits across many git checkouts —
+             <a href="https://github.com/pie-ai/unpushed">source and releases</a>.</p>
+          <h2>Install on Debian or Ubuntu</h2>
+          <pre>curl -fsSL https://pie-ai.github.io/unpushed/key.gpg \
+            | sudo tee /etc/apt/keyrings/unpushed.asc &gt; /dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/unpushed.asc] \
+            https://pie-ai.github.io/unpushed stable main" \
+            | sudo tee /etc/apt/sources.list.d/unpushed.list
+          sudo apt update &amp;&amp; sudo apt install unpushed</pre>
+          <p>Packages are built for <code>amd64</code> and <code>arm64</code> and are
+             statically linked, so they carry no dependency on a system libgit2.</p>
+          HTML
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      # Safe here only because the whole site is regenerated from the releases
+      # on every run. With an incrementally maintained pool this would delete
+      # every previously published package.
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  homebrew:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch macOS checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" \
+             --pattern '*apple-darwin.tar.gz' --dir dl
+          echo "ARM_SHA=$(shasum -a 256 dl/unpushed-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "X86_SHA=$(shasum -a 256 dl/unpushed-x86_64-apple-darwin.tar.gz  | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Render formula
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sed -e "s/@VERSION@/$version/g" \
+              -e "s/@ARM_SHA@/$ARM_SHA/g" \
+              -e "s/@X86_SHA@/$X86_SHA/g" \
+              packaging/homebrew/unpushed.rb.in > unpushed.rb
+          cat unpushed.rb
+
+      - name: Push to the tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/pie-ai/homebrew-unpushed.git" tap
+          mkdir -p tap/Formula
+          cp unpushed.rb tap/Formula/unpushed.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/unpushed.rb
+          git diff --cached --quiet && { echo "formula unchanged"; exit 0; }
+          git commit -m "unpushed ${GITHUB_REF_NAME}"
+          git push

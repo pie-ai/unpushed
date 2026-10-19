@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# No scheduled runs on purpose: dependency drift is handled by hand, see
+# .github/dependabot.yml.
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --all-targets -- -D warnings
+
+      # The scan and push tests create real repositories, including a local
+      # bare remote, so nothing here touches the network.
+      - run: cargo test
+
+  # This project started life with internal repository names and ticket ids as
+  # test fixtures. The guard keeps them from coming back.
+  #
+  # The specific names are deliberately NOT listed here — a public workflow
+  # naming them would disclose exactly what it is meant to keep out. They live
+  # in the FORBIDDEN_PATTERNS repository secret; the shape-based checks below
+  # work without it and also run on pull requests from forks.
+  no-leaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for identifiers that should not be public
+        env:
+          FORBIDDEN: ${{ secrets.FORBIDDEN_PATTERNS }}
+        run: |
+          paths="src tests README.md CONTRIBUTING.md Cargo.toml build.rs"
+
+          # Ticket-shaped ids and absolute home paths leak context even when no
+          # name is attached to them.
+          if grep -rnE '\b[A-Z]{2,6}-[0-9]{4,}\b|/Users/[a-z]' $paths; then
+            echo "::error::ticket-shaped identifier or absolute home path found"
+            exit 1
+          fi
+
+          if [ -z "$FORBIDDEN" ]; then
+            echo "FORBIDDEN_PATTERNS not set — shape checks only"
+            exit 0
+          fi
+          if grep -rniE "$FORBIDDEN" $paths; then
+            echo "::error::forbidden identifier found"
+            exit 1
+          fi

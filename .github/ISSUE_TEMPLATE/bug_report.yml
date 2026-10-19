@@ -1,0 +1,40 @@
+name: Bug report
+description: Something does not behave as documented
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: >
+        Ideally the state of the repositories involved — branch, upstream,
+        whether commits were pushed. Redact names that are not yours to share.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `unpushed --version`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15 (Apple silicon), Debian 12 (amd64), …
+    validations:
+      required: true
+  - type: textarea
+    id: table
+    attributes:
+      label: Table output
+      description: If this is about what the table shows, paste `unpushed -T <dir>`.
+      render: text
