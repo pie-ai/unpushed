@@ -40,9 +40,14 @@ echo "deb [signed-by=/etc/apt/keyrings/unpushed.asc] https://pie-ai.github.io/un
 sudo apt update && sudo apt install unpushed
 ```
 
-**Prebuilt binaries** for Linux (x86_64, aarch64) and macOS (Apple silicon,
-Intel) are attached to every [release](https://github.com/pie-ai/unpushed/releases).
-They are statically linked and have no runtime dependencies.
+**Prebuilt binaries** for Linux (x86_64, aarch64, armv7) and macOS (Apple
+silicon, Intel) are attached to every
+[release](https://github.com/pie-ai/unpushed/releases). They are statically
+linked and have no runtime dependencies.
+
+On a Raspberry Pi, apt picks `arm64` on a 64-bit OS and `armhf` on a 32-bit one.
+The `armhf` build targets ARMv7, so it covers the Pi 2 and later; the Pi 1 and
+Zero are ARMv6 and are not supported.
 
 **From source** — needs Rust 1.88 or newer:
 

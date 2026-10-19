@@ -18,12 +18,14 @@ env:
 jobs:
   # Without this the .deb and the Homebrew formula would carry a different
   # version than the release they belong to.
+  # Runs on every trigger so that `workflow_dispatch` can exercise the build
+  # matrix without cutting a release; the check itself only applies to tags.
   check-version:
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Tag must match the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           crate="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
@@ -46,6 +48,14 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             deb: true
+          # 32-bit Raspberry Pi and Debian armhf. Built with `cross` because
+          # vendored libgit2 needs a musl C cross-toolchain, and Ubuntu ships
+          # none. Docker is used here only as a build tool — nothing container
+          # based is published.
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            deb: true
+            cross: true
           - target: aarch64-apple-darwin
             os: macos-latest
           # Intel macOS now only exists as a large runner; its billing differs
@@ -67,14 +77,23 @@ jobs:
       # libgit2 is compiled in via the vendored-libgit2 feature, using the `cc`
       # crate rather than cmake — a musl C compiler is all it needs.
       - name: Install musl toolchain
-        if: contains(matrix.target, 'musl')
+        if: contains(matrix.target, 'musl') && !matrix.cross
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
 
       - name: Build
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       - name: Verify the binary is self-contained
         if: contains(matrix.target, 'musl')
@@ -87,8 +106,20 @@ jobs:
           }
 
       - name: Smoke test
-        # Runs natively on every matrix entry: all four targets match their runner.
+        # Only where the binary matches the runner. The armv7 build is
+        # cross-compiled on x86_64 and cannot be executed here; `file` below
+        # is what confirms it came out right.
+        if: ${{ !matrix.cross }}
         run: target/${{ matrix.target }}/release/unpushed --version
+
+      - name: Confirm the cross-built architecture
+        if: matrix.cross
+        run: |
+          file target/${{ matrix.target }}/release/unpushed | tee /tmp/arch.txt
+          grep -q 'ARM' /tmp/arch.txt || {
+            echo "::error::cross-built binary is not an ARM executable"
+            exit 1
+          }
 
       - name: Package tarball
         run: |
@@ -107,7 +138,9 @@ jobs:
           cargo install cargo-deb --locked
           # --no-build reuses the binary built above; cargo-deb rewrites the
           # target/release/ asset paths for the selected target.
-          cargo deb --target ${{ matrix.target }} --no-build --output .
+          # --no-strip: [profile.release] strip = true already did it, and a
+          # cross-built target would otherwise need its own strip binary.
+          cargo deb --target ${{ matrix.target }} --no-build --no-strip --output .
           ls -la ./*.deb
           dpkg-deb -I ./*.deb
 

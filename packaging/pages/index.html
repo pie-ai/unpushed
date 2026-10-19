@@ -94,9 +94,14 @@ echo "deb [signed-by=/etc/apt/keyrings/unpushed.asc] \
 
 sudo apt update &amp;&amp; sudo apt install unpushed</code></pre>
 
-<p class="note">Packages are built for <code>amd64</code> and <code>arm64</code> and
-are statically linked, so they carry no dependency on a system libgit2. Tested on
-Debian bookworm and trixie.</p>
+<p class="note">Packages are built for <code>amd64</code>, <code>arm64</code> and
+<code>armhf</code>, and are statically linked, so they carry no dependency on a
+system libgit2. Tested on Debian bookworm and trixie.</p>
+
+<p class="note"><strong>Raspberry Pi:</strong> a 64-bit OS installs the
+<code>arm64</code> package, a 32-bit OS the <code>armhf</code> one — apt picks the
+right one. The <code>armhf</code> build targets ARMv7, so it covers the Pi 2 and
+later. The Pi 1 and Zero are ARMv6 and are not supported.</p>
 
 <h3>Prebuilt binary — any Linux or macOS</h3>
 <pre><code>curl -fsSL https://github.com/pie-ai/unpushed/releases/latest/download/unpushed-x86_64-unknown-linux-musl.tar.gz \
@@ -107,6 +112,7 @@ sudo install -m 755 unpushed-x86_64-unknown-linux-musl/unpushed /usr/local/bin/<
   <tr><th>Platform</th><th>Archive</th></tr>
   <tr><td>Linux x86_64</td><td><code>unpushed-x86_64-unknown-linux-musl.tar.gz</code></td></tr>
   <tr><td>Linux aarch64</td><td><code>unpushed-aarch64-unknown-linux-musl.tar.gz</code></td></tr>
+  <tr><td>Linux armv7 — Raspberry Pi, 32-bit</td><td><code>unpushed-armv7-unknown-linux-musleabihf.tar.gz</code></td></tr>
   <tr><td>macOS Apple silicon</td><td><code>unpushed-aarch64-apple-darwin.tar.gz</code></td></tr>
   <tr><td>macOS Intel</td><td><code>unpushed-x86_64-apple-darwin.tar.gz</code></td></tr>
 </table>

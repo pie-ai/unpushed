@@ -8,6 +8,11 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+### Added
+
+- Builds for `armv7-unknown-linux-musleabihf`, published as a tarball and as an
+  `armhf` Debian package. Covers 32-bit Raspberry Pi OS from the Pi 2 onwards.
+
 ## [0.1.0] - 2026-10-19
 
 First release.
