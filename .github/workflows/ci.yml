@@ -36,6 +36,32 @@ jobs:
       # bare remote, so nothing here touches the network.
       - run: cargo test
 
+  # The published Linux binaries are statically linked against musl, and until
+  # now nothing ran the test suite against them: the matrix above covers glibc
+  # and macOS. What Debian and Raspberry Pi users install was never tested.
+  #
+  # The musl binary runs on the glibc runner, so this is a normal test run with
+  # a different target — no emulation, about a minute.
+  test-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: musl
+
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Test against musl
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo test --target x86_64-unknown-linux-musl
+
   # This project started life with internal repository names and ticket ids as
   # test fixtures. The guard keeps them from coming back.
   #

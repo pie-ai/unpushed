@@ -194,9 +194,10 @@ jobs:
     # so a workflow_dispatch rebuilds it from scratch.
     if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+    # The job that touches the signing key, so the approval gate belongs here
+    # rather than on the deployment. Splitting the two is also the documented
+    # Pages pattern: build uploads an artifact, deploy publishes it.
+    environment: apt-signing
     steps:
       - uses: actions/checkout@v5
 
@@ -277,8 +278,15 @@ jobs:
         with:
           path: site
 
-      # Safe here only because the whole site is regenerated from the releases
-      # on every run. With an incrementally maintained pool this would delete
+  pages:
+    needs: apt
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      # Safe only because the whole site is regenerated from the releases on
+      # every run. With an incrementally maintained pool this would delete
       # every previously published package.
       - id: deploy
         uses: actions/deploy-pages@v4
