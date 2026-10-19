@@ -8,6 +8,8 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
 ### Added
 
 - `→` opens a tree of a repository's unpushed commits beside the list: commit,
@@ -111,7 +113,8 @@ First release.
 - Plain table output (`-T`), used automatically when stdout is not a terminal.
 - Man page and shell completions for bash, zsh and fish.
 
-[Unreleased]: https://github.com/pie-ai/unpushed/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/pie-ai/unpushed/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/pie-ai/unpushed/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/pie-ai/unpushed/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/pie-ai/unpushed/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pie-ai/unpushed/releases/tag/v0.1.0
