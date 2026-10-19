@@ -8,6 +8,25 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+### Added
+
+- `b` rebases onto the branch's upstream, which is what clears a refused push —
+  until now the tool said "rebase first" and offered no way to do it. `B`
+  rebases onto the remote's default branch instead, for bringing a topic branch
+  up to the mainline.
+- Both refuse rather than improvise: a dirty working tree, a detached HEAD or a
+  rebase already under way all stop them. On conflict the rebase is aborted, so
+  the working tree is left exactly as it was found, and the row says what it
+  conflicted with.
+
+### Changed
+
+- A refused push now says which of the four states it is in, and what to do
+  about it. Being behind with nothing to push is no longer reported as "already
+  up to date", which it never was. Divergence is told apart by its cause: when
+  both sides moved, `b` settles it; when the branch was rebased onto the default
+  branch, `b` would undo exactly that, so the row points at gitui instead.
+
 ## [0.3.0] - 2026-10-19
 
 ### Added

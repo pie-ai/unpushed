@@ -35,6 +35,132 @@ impl PushOutcome {
     }
 }
 
+/// What a rebase is measured against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Onto {
+    /// The branch's own upstream. This is the one that clears a refused push:
+    /// the push guard compares against exactly this ref.
+    Upstream,
+    /// The remote's default branch, for bringing a topic branch up to the
+    /// mainline. Leaves the branch diverged from its upstream afterwards.
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebaseOutcome {
+    Rebased {
+        onto: String,
+    },
+    /// Already contains everything the target has.
+    UpToDate,
+    /// Refused on purpose, with the reason shown to the user.
+    Refused(String),
+    /// Conflicted and was rolled back; the tree is as it was.
+    Conflicted {
+        onto: String,
+    },
+    Failed(String),
+}
+
+impl RebaseOutcome {
+    pub fn is_success(&self) -> bool {
+        matches!(
+            self,
+            RebaseOutcome::Rebased { .. } | RebaseOutcome::UpToDate
+        )
+    }
+}
+
+/// Fetches, checks that a rebase is safe, then rebases.
+///
+/// Refuses rather than improvises: a dirty tree, a detached HEAD or a rebase
+/// already under way all stop it. On conflict the rebase is aborted, so the
+/// working tree is always left exactly as it was found — resolving conflicts
+/// is a job for an editor, not for a list of repositories.
+pub fn rebase(path: &Path, onto: Onto) -> RebaseOutcome {
+    if let Err(reason) = ready_to_rebase(path) {
+        return RebaseOutcome::Refused(reason);
+    }
+    if let Err(err) = fetch(path) {
+        return RebaseOutcome::Failed(format!("fetch: {err}"));
+    }
+
+    let target = match resolve(path, onto) {
+        Ok(target) => target,
+        Err(reason) => return RebaseOutcome::Refused(reason),
+    };
+
+    match run(path, &["rev-list", "--count", &format!("HEAD..{target}")]) {
+        Ok(out) if out.trim() == "0" => return RebaseOutcome::UpToDate,
+        Ok(_) => {}
+        Err(err) => return RebaseOutcome::Failed(err),
+    }
+
+    match run(path, &["rebase", &target]) {
+        Ok(_) => RebaseOutcome::Rebased { onto: target },
+        Err(_) => {
+            // Leave nothing half-applied. If the abort itself fails the
+            // repository needs a human, and saying so is more use than a
+            // conflict message.
+            if run(path, &["rebase", "--abort"]).is_err() {
+                return RebaseOutcome::Failed(
+                    "rebase failed and could not be aborted — resolve by hand".to_string(),
+                );
+            }
+            RebaseOutcome::Conflicted { onto: target }
+        }
+    }
+}
+
+/// Whether the divergence looks like the result of rebasing onto the default
+/// branch, rather than both sides moving on their own.
+///
+/// The test is containment: after such a rebase the local branch carries the
+/// default branch's tip while its own remote counterpart does not. Both sides
+/// merely moving leaves neither containing it.
+fn rebased_onto_default(path: &Path, branch: &str) -> bool {
+    let Ok(default) = resolve(path, Onto::Default) else {
+        return false;
+    };
+    if default == format!("origin/{branch}") {
+        return false;
+    }
+    let contains = |rev: &str| run(path, &["merge-base", "--is-ancestor", &default, rev]).is_ok();
+    contains("HEAD") && !contains(&format!("origin/{branch}"))
+}
+
+fn ready_to_rebase(path: &Path) -> Result<(), String> {
+    // A rebase left half-finished by something else must not be stacked on.
+    if path.join(".git/rebase-merge").exists() || path.join(".git/rebase-apply").exists() {
+        return Err("a rebase is already in progress".to_string());
+    }
+    match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
+        Ok(_) => {}
+        Err(_) => return Err("detached HEAD — check out a branch first".to_string()),
+    }
+    // Rebasing over local changes would either refuse halfway or stash them
+    // somewhere the user is not looking.
+    match run(path, &["status", "--porcelain", "--untracked-files=no"]) {
+        Ok(out) if out.trim().is_empty() => Ok(()),
+        Ok(_) => Err("uncommitted changes — commit or stash them first".to_string()),
+        Err(err) => Err(err),
+    }
+}
+
+fn resolve(path: &Path, onto: Onto) -> Result<String, String> {
+    match onto {
+        Onto::Upstream => run(path, &["rev-parse", "--abbrev-ref", "@{upstream}"])
+            .map(|out| out.trim().to_string())
+            .map_err(|_| "no upstream to rebase onto".to_string()),
+        Onto::Default => run(
+            path,
+            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        )
+        .map(|out| out.trim().to_string())
+        .map_err(|_| "no default branch on origin".to_string()),
+    }
+}
+
 /// Runs `git fetch origin` for one repository.
 ///
 /// A repository without an `origin` remote is not an error: there is simply
@@ -70,24 +196,46 @@ pub fn push(path: &Path, branch: &str) -> PushOutcome {
     // behind `origin/main` by design; refusing to push for that reason would
     // block the very workflow this tool exists for.
     if remote_exists {
-        let range = format!("{branch}..origin/{branch}");
-        match run(path, &["rev-list", "--count", &range]) {
+        // Both counts in one call, so the four cases below can be told apart.
+        // Reading them separately would mean deciding on half the picture.
+        let range = format!("origin/{branch}...{branch}");
+        let (behind, ahead) = match run(path, &["rev-list", "--left-right", "--count", &range]) {
             Ok(out) => {
-                let behind: usize = out.trim().parse().unwrap_or(0);
-                if behind > 0 {
-                    return PushOutcome::Refused(format!(
-                        "behind origin/{branch} by {behind} commit(s) — rebase first"
-                    ));
-                }
+                let mut parts = out.split_whitespace();
+                (
+                    parts.next().and_then(|n| n.parse().ok()).unwrap_or(0usize),
+                    parts.next().and_then(|n| n.parse().ok()).unwrap_or(0usize),
+                )
             }
             Err(err) => return PushOutcome::Failed(err),
-        }
+        };
 
-        let range = format!("origin/{branch}..{branch}");
-        match run(path, &["rev-list", "--count", &range]) {
-            Ok(out) if out.trim() == "0" => return PushOutcome::UpToDate,
-            Ok(_) => {}
-            Err(err) => return PushOutcome::Failed(err),
+        match (ahead, behind) {
+            (0, 0) => return PushOutcome::UpToDate,
+            // Nothing to push, but not current either. Calling that "up to
+            // date" would be a lie, and the way out is a rebase.
+            (0, behind) => {
+                return PushOutcome::Refused(format!(
+                    "nothing to push — {behind} behind origin/{branch}, press b to rebase"
+                ))
+            }
+            // Diverged histories, which arise two ways and want opposite
+            // answers. Usually both sides simply moved, and rebasing onto the
+            // upstream settles it. But if the branch was rebased onto the
+            // default branch, rebasing onto the upstream would undo exactly
+            // that — there the only way on is a force push, which this tool
+            // deliberately does not do.
+            (ahead, behind) if behind > 0 => {
+                let hint = if rebased_onto_default(path, branch) {
+                    "rebased onto the default branch — push it from gitui"
+                } else {
+                    "press b to rebase onto it"
+                };
+                return PushOutcome::Refused(format!(
+                    "diverged from origin/{branch} ({ahead} ahead, {behind} behind) — {hint}"
+                ));
+            }
+            _ => {}
         }
     }
 
@@ -259,6 +407,15 @@ mod tests {
             work
         }
 
+        fn head(&self, work: &Path) -> String {
+            let out = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(work)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+
         fn commit(&self, work: &Path, file: &str) {
             std::fs::write(work.join(file), file).unwrap();
             self.git(work, &["add", "."]);
@@ -300,8 +457,10 @@ mod tests {
         assert_eq!(push(&work, "feature/login"), PushOutcome::UpToDate);
     }
 
+    /// Local commits plus remote commits is divergence, not a plain
+    /// rebase-and-push — and the message has to say so.
     #[test]
-    fn refuses_to_push_when_behind_the_target_branch() {
+    fn refuses_to_push_when_the_histories_diverged() {
         let fx = Fixture::new("behind");
         let work = fx.clone("demo");
         let other = fx.clone("demo-other");
@@ -319,10 +478,38 @@ mod tests {
 
         fx.commit(&work, "mine.txt");
         match push(&work, "main") {
-            PushOutcome::Refused(reason) => assert!(
-                reason.contains("behind origin/main"),
-                "unexpected reason: {reason}"
-            ),
+            PushOutcome::Refused(reason) => {
+                assert!(reason.contains("diverged"), "unexpected reason: {reason}");
+                // Both sides simply moved, so rebasing onto the upstream is
+                // the way on.
+                assert!(reason.contains("press b"), "{reason}");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+
+    /// Behind with nothing of your own is not "up to date"; saying so would
+    /// hide that the branch has fallen behind.
+    #[test]
+    fn being_behind_with_nothing_to_push_says_what_to_do() {
+        let fx = Fixture::new("behind-only");
+        let work = fx.clone("demo");
+        let other = fx.clone("demo-other");
+        let remote = fx.0.join("demo.git");
+        fx.git(
+            &other,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        );
+        fx.git(&other, &["fetch", "-q", "origin"]);
+        fx.git(&other, &["reset", "-q", "--hard", "origin/main"]);
+        fx.commit(&other, "theirs.txt");
+        fx.git(&other, &["push", "-q", "origin", "main"]);
+
+        match push(&work, "main") {
+            PushOutcome::Refused(reason) => {
+                assert!(reason.contains("nothing to push"), "{reason}");
+                assert!(reason.contains("press b"), "no way forward: {reason}");
+            }
             other => panic!("expected Refused, got {other:?}"),
         }
     }
@@ -368,6 +555,175 @@ mod tests {
         match push(&work, "main") {
             PushOutcome::Failed(message) => assert!(!message.is_empty()),
             other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    /// The case that motivated this: push refused because the branch is
+    /// behind its upstream, and rebasing clears it.
+    #[test]
+    fn rebasing_onto_the_upstream_clears_a_refused_push() {
+        let fx = Fixture::new("rebase-up");
+        let work = fx.clone("demo");
+        let other = fx.clone("demo-other");
+        let remote = fx.0.join("demo.git");
+        fx.git(
+            &other,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        );
+        fx.git(&other, &["fetch", "-q", "origin"]);
+        fx.git(&other, &["reset", "-q", "--hard", "origin/main"]);
+        fx.commit(&other, "theirs.txt");
+        fx.git(&other, &["push", "-q", "origin", "main"]);
+
+        fx.commit(&work, "mine.txt");
+        assert!(matches!(push(&work, "main"), PushOutcome::Refused(_)));
+
+        match rebase(&work, Onto::Upstream) {
+            RebaseOutcome::Rebased { onto } => assert_eq!(onto, "origin/main"),
+            other => panic!("expected Rebased, got {other:?}"),
+        }
+        assert_eq!(push(&work, "main"), PushOutcome::Pushed { created: false });
+    }
+
+    #[test]
+    fn a_branch_already_up_to_date_is_left_alone() {
+        let fx = Fixture::new("rebase-noop");
+        let work = fx.clone("demo");
+        fx.commit(&work, "a.txt");
+        assert_eq!(rebase(&work, Onto::Upstream), RebaseOutcome::UpToDate);
+    }
+
+    /// Rebasing over local changes would either stop halfway or move them
+    /// somewhere the user is not looking.
+    #[test]
+    fn a_dirty_tree_is_refused() {
+        let fx = Fixture::new("rebase-dirty");
+        let work = fx.clone("demo");
+        std::fs::write(work.join("README"), "changed\n").unwrap();
+
+        match rebase(&work, Onto::Upstream) {
+            RebaseOutcome::Refused(reason) => assert!(reason.contains("uncommitted"), "{reason}"),
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_detached_head_is_refused() {
+        let fx = Fixture::new("rebase-detached");
+        let work = fx.clone("demo");
+        fx.commit(&work, "a.txt");
+        fx.git(&work, &["checkout", "-q", "--detach", "HEAD"]);
+
+        match rebase(&work, Onto::Upstream) {
+            RebaseOutcome::Refused(reason) => assert!(reason.contains("detached"), "{reason}"),
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+
+    /// On conflict the tree must be exactly as it was found — resolving
+    /// conflicts belongs in an editor, not in a list of repositories.
+    #[test]
+    fn a_conflict_is_rolled_back_and_leaves_no_trace() {
+        let fx = Fixture::new("rebase-conflict");
+        let work = fx.clone("demo");
+        let other = fx.clone("demo-other");
+        let remote = fx.0.join("demo.git");
+        fx.git(
+            &other,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        );
+        fx.git(&other, &["fetch", "-q", "origin"]);
+        fx.git(&other, &["reset", "-q", "--hard", "origin/main"]);
+        // Both sides change the same line of the same file.
+        std::fs::write(other.join("README"), "theirs\n").unwrap();
+        fx.git(&other, &["add", "-A"]);
+        fx.git(&other, &["commit", "-qm", "theirs"]);
+        fx.git(&other, &["push", "-q", "origin", "main"]);
+
+        std::fs::write(work.join("README"), "mine\n").unwrap();
+        fx.git(&work, &["add", "-A"]);
+        fx.git(&work, &["commit", "-qm", "mine"]);
+        let before = fx.head(&work);
+
+        match rebase(&work, Onto::Upstream) {
+            RebaseOutcome::Conflicted { .. } => {}
+            other => panic!("expected Conflicted, got {other:?}"),
+        }
+
+        assert_eq!(fx.head(&work), before, "HEAD moved despite the abort");
+        assert!(
+            !work.join(".git/rebase-merge").exists() && !work.join(".git/rebase-apply").exists(),
+            "a rebase was left in progress"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("README")).unwrap(),
+            "mine\n",
+            "the working tree was not restored"
+        );
+    }
+
+    #[test]
+    fn a_rebase_already_under_way_is_not_stacked_on() {
+        let fx = Fixture::new("rebase-busy");
+        let work = fx.clone("demo");
+        std::fs::create_dir_all(work.join(".git/rebase-merge")).unwrap();
+
+        match rebase(&work, Onto::Upstream) {
+            RebaseOutcome::Refused(reason) => assert!(reason.contains("in progress"), "{reason}"),
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_branch_without_an_upstream_says_so() {
+        let fx = Fixture::new("rebase-noup");
+        let work = fx.clone("demo");
+        fx.git(&work, &["checkout", "-q", "-b", "topic"]);
+
+        match rebase(&work, Onto::Upstream) {
+            RebaseOutcome::Refused(reason) => assert!(reason.contains("no upstream"), "{reason}"),
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+
+    /// After rebasing a topic branch onto the default branch it diverges from
+    /// its own upstream, and the message has to point somewhere useful rather
+    /// than suggesting another rebase.
+    #[test]
+    fn a_diverged_branch_is_told_apart_from_a_merely_behind_one() {
+        let fx = Fixture::new("rebase-diverge");
+        let work = fx.clone("demo");
+        fx.git(&work, &["remote", "set-head", "origin", "main"]);
+        fx.git(&work, &["checkout", "-q", "-b", "topic"]);
+        fx.commit(&work, "topic.txt");
+        fx.git(&work, &["push", "-q", "-u", "origin", "topic"]);
+
+        // main moves on, and the topic branch is rebased onto it.
+        let other = fx.clone("demo-other");
+        let remote = fx.0.join("demo.git");
+        fx.git(
+            &other,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        );
+        fx.git(&other, &["fetch", "-q", "origin"]);
+        fx.git(&other, &["reset", "-q", "--hard", "origin/main"]);
+        fx.commit(&other, "main-moved.txt");
+        fx.git(&other, &["push", "-q", "origin", "main"]);
+
+        match rebase(&work, Onto::Default) {
+            RebaseOutcome::Rebased { onto } => assert_eq!(onto, "origin/main"),
+            other => panic!("expected Rebased, got {other:?}"),
+        }
+
+        match push(&work, "topic") {
+            PushOutcome::Refused(reason) => {
+                assert!(reason.contains("diverged"), "{reason}");
+                // Here `b` would undo the rebase that just happened, so it
+                // must not be suggested.
+                assert!(reason.contains("gitui"), "{reason}");
+                assert!(!reason.contains("press b"), "misleading advice: {reason}");
+            }
+            other => panic!("expected Refused, got {other:?}"),
         }
     }
 

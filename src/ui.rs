@@ -17,12 +17,12 @@ use crate::model::{Divergence, MainState, ScanOutcome, UpstreamState};
 fn help(app: &App) -> &'static str {
     match app.focus() {
         Focus::List => {
-            "j/k select · Enter actions · → commits · p push · g gitui · Space mark · \
-             A visible · P marked · f/F fetch · r/R refresh · / filter · a all · q quit"
+            "j/k select · Enter actions · → commits · p push · b/B rebase · g gitui · \
+             Space mark · A/P push many · f/F fetch · r/R refresh · / filter · a all · q quit"
         }
         Focus::Panel => {
             "j/k move · Space fold · → open · ← back · Enter actions · p push · \
-             g gitui · f fetch · r refresh · q quit"
+             b/B rebase · g gitui · f fetch · r refresh · q quit"
         }
         Focus::Diff => "j/k · PgUp/PgDn · Home/End scroll · ← back · q quit",
     }
@@ -197,6 +197,7 @@ fn render_row(row: &Row, selected: bool, spinner: char) -> TableRow<'static> {
         (_, Activity::Scanning) => (spinning.as_str(), Style::default().fg(Color::DarkGray)),
         (_, Activity::Fetching) => (spinning.as_str(), Style::default().fg(Color::Cyan)),
         (_, Activity::Pushing) => (spinning.as_str(), Style::default().fg(Color::Cyan)),
+        (_, Activity::Rebasing) => (spinning.as_str(), Style::default().fg(Color::Cyan)),
         (None, _) => ("…", Style::default().fg(Color::DarkGray)),
         (Some(ScanOutcome::Failed(_)), _) => ("!", Style::default().fg(Color::Red)),
         (Some(ScanOutcome::Ok(status)), _) => {
@@ -256,6 +257,7 @@ fn render_row(row: &Row, selected: bool, spinner: char) -> TableRow<'static> {
         Activity::Scanning => ("reading …".to_string(), Style::default().fg(Color::Cyan)),
         Activity::Fetching => ("fetching …".to_string(), Style::default().fg(Color::Cyan)),
         Activity::Pushing => ("pushing …".to_string(), Style::default().fg(Color::Cyan)),
+        Activity::Rebasing => ("rebasing …".to_string(), Style::default().fg(Color::Cyan)),
         Activity::Idle => (trailing, trailing_style),
     };
 

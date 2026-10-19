@@ -7,7 +7,7 @@
 //! what a bulk push would hit — testable without a tty.
 
 use crate::commits::{Commit, DiffLine};
-use crate::git::PushOutcome;
+use crate::git::{Onto, PushOutcome, RebaseOutcome};
 use crate::model::{Head, Repo, ScanOutcome, Summary};
 
 /// Which repositories the list shows.
@@ -24,6 +24,7 @@ struct Busy {
     scanning: bool,
     fetching: bool,
     pushing: bool,
+    rebasing: bool,
 }
 
 /// What a row is currently busy with, as shown to the user. Derived from
@@ -34,6 +35,7 @@ pub enum Activity {
     Scanning,
     Fetching,
     Pushing,
+    Rebasing,
 }
 
 /// Background work the runner should start.
@@ -44,6 +46,10 @@ pub enum Job {
     Push {
         index: usize,
         branch: String,
+    },
+    Rebase {
+        index: usize,
+        onto: Onto,
     },
     /// Unpushed commits of one repository, for the panel.
     Commits(usize),
@@ -69,6 +75,10 @@ pub enum JobResult {
     Pushed {
         index: usize,
         outcome: PushOutcome,
+    },
+    Rebased {
+        index: usize,
+        outcome: RebaseOutcome,
     },
     Commits {
         index: usize,
@@ -277,7 +287,9 @@ impl Row {
     /// The kind of work shown for this row. Pushing outranks fetching, which
     /// outranks reading: the user cares most about the one with consequences.
     pub fn activity(&self) -> Activity {
-        if self.busy.pushing {
+        if self.busy.rebasing {
+            Activity::Rebasing
+        } else if self.busy.pushing {
             Activity::Pushing
         } else if self.busy.fetching {
             Activity::Fetching
@@ -295,6 +307,7 @@ impl Row {
             Activity::Scanning => self.busy.scanning = running,
             Activity::Fetching => self.busy.fetching = running,
             Activity::Pushing => self.busy.pushing = running,
+            Activity::Rebasing => self.busy.rebasing = running,
             Activity::Idle => self.busy = Busy::default(),
         }
     }
@@ -406,6 +419,16 @@ impl App {
                 key: Key::Char('f'),
                 hint: "f",
                 label: "Fetch from origin".to_string(),
+            },
+            MenuEntry {
+                key: Key::Char('b'),
+                hint: "b",
+                label: "Rebase onto upstream".to_string(),
+            },
+            MenuEntry {
+                key: Key::Char('B'),
+                hint: "B",
+                label: "Rebase onto default branch".to_string(),
             },
             MenuEntry {
                 key: Key::Char('r'),
@@ -541,6 +564,12 @@ impl App {
                     }
                 }
             }
+            JobResult::Rebased { index, outcome } => {
+                if let Some(row) = self.rows.get_mut(index) {
+                    row.set_busy(Activity::Rebasing, false);
+                    row.note = Some(describe_rebase(&outcome));
+                }
+            }
             JobResult::Commits { index, result } => {
                 // Only accept it if the panel still shows the repository that
                 // was asked for: the cursor may have moved on while it loaded.
@@ -585,6 +614,7 @@ impl App {
             Job::Scan(index) => (*index, Activity::Scanning),
             Job::Fetch(index) => (*index, Activity::Fetching),
             Job::Push { index, .. } => (*index, Activity::Pushing),
+            Job::Rebase { index, .. } => (*index, Activity::Rebasing),
             // Reading commits or a diff is read-only and takes milliseconds.
             // Marking the row busy would flash a spinner and lock keys for no
             // reason; the panel shows its own loading state.
@@ -728,7 +758,9 @@ impl App {
             | Key::Char('g')
             | Key::Char('p')
             | Key::Char('f')
-            | Key::Char('r') => match self.selected() {
+            | Key::Char('r')
+            | Key::Char('b')
+            | Key::Char('B') => match self.selected() {
                 Some(index) => self.repo_action(key, index).unwrap_or(Action::None),
                 None => self.warn("No row selected."),
             },
@@ -763,6 +795,7 @@ impl App {
             Activity::Scanning => Err(format!("{} is being read.", row.repo.name)),
             Activity::Fetching => Err(format!("{} is fetching.", row.repo.name)),
             Activity::Pushing => Err(format!("{} is pushing.", row.repo.name)),
+            Activity::Rebasing => Err(format!("{} is rebasing.", row.repo.name)),
         }
     }
 
@@ -776,6 +809,8 @@ impl App {
             Key::Char('p') => self.push_row(repo),
             Key::Char('f') => self.job_on_row(repo, Job::Fetch),
             Key::Char('r') => self.job_on_row(repo, Job::Scan),
+            Key::Char('b') => self.rebase_row(repo, Onto::Upstream),
+            Key::Char('B') => self.rebase_row(repo, Onto::Default),
             Key::Char(' ') => {
                 if let Some(row) = self.rows.get_mut(repo) {
                     row.marked = !row.marked;
@@ -840,6 +875,13 @@ impl App {
     fn push_row(&mut self, index: usize) -> Action {
         match self.push_job(index) {
             Ok(job) => self.start(vec![job]),
+            Err(reason) => self.warn(&reason),
+        }
+    }
+
+    fn rebase_row(&mut self, index: usize, onto: Onto) -> Action {
+        match self.require_idle(index) {
+            Ok(()) => self.start(vec![Job::Rebase { index, onto }]),
             Err(reason) => self.warn(&reason),
         }
     }
@@ -916,9 +958,12 @@ impl App {
                 self.mode = Mode::Menu(Menu { repo, cursor: 0 });
                 Action::None
             }
-            Key::Char('p') | Key::Char('g') | Key::Char('f') | Key::Char('r') => {
-                self.repo_action(key, repo).unwrap_or(Action::None)
-            }
+            Key::Char('p')
+            | Key::Char('g')
+            | Key::Char('f')
+            | Key::Char('r')
+            | Key::Char('b')
+            | Key::Char('B') => self.repo_action(key, repo).unwrap_or(Action::None),
             Key::Char('q') => Action::Quit,
             _ => Action::None,
         }
@@ -1132,6 +1177,33 @@ impl App {
     fn clamp_cursor(&mut self) {
         let len = self.visible().len();
         self.cursor = self.cursor.min(len.saturating_sub(1));
+    }
+}
+
+fn describe_rebase(outcome: &RebaseOutcome) -> Message {
+    match outcome {
+        RebaseOutcome::Rebased { onto } => Message {
+            level: Level::Info,
+            text: format!("rebased onto {onto}"),
+        },
+        RebaseOutcome::UpToDate => Message {
+            level: Level::Info,
+            text: "already up to date".into(),
+        },
+        RebaseOutcome::Refused(reason) => Message {
+            level: Level::Warn,
+            text: reason.clone(),
+        },
+        // Not an error: the tree is exactly as it was, and conflicts are for
+        // an editor to settle.
+        RebaseOutcome::Conflicted { onto } => Message {
+            level: Level::Warn,
+            text: format!("conflicts with {onto} — rolled back, resolve in gitui"),
+        },
+        RebaseOutcome::Failed(err) => Message {
+            level: Level::Error,
+            text: err.clone(),
+        },
     }
 }
 
@@ -1762,6 +1834,72 @@ mod tests {
             app.tick();
         }
         assert_eq!(first, app.spinner());
+    }
+
+    #[test]
+    fn b_rebases_onto_the_upstream_and_shift_b_onto_the_default() {
+        for (key, onto) in [
+            (Key::Char('b'), Onto::Upstream),
+            (Key::Char('B'), Onto::Default),
+        ] {
+            let mut fresh = app();
+            assert_eq!(
+                fresh.on_key(key),
+                Action::Start(vec![Job::Rebase { index: 0, onto }]),
+                "key {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rebase_marks_the_row_busy_and_blocks_other_work() {
+        let mut app = app();
+        app.on_key(Key::Char('b'));
+        assert_eq!(app.rows[0].activity(), Activity::Rebasing);
+        assert_eq!(app.on_key(Key::Char('p')), Action::None);
+        assert!(app.message.as_ref().unwrap().text.contains("is rebasing"));
+    }
+
+    /// A conflict is not a failure of the tool: the tree is untouched, and
+    /// the row should say what to do rather than sound an alarm.
+    #[test]
+    fn a_conflict_is_reported_as_a_warning_with_a_way_forward() {
+        let mut app = app();
+        app.apply(JobResult::Rebased {
+            index: 0,
+            outcome: RebaseOutcome::Conflicted {
+                onto: "origin/main".into(),
+            },
+        });
+        let note = app.rows[0].note.as_ref().unwrap();
+        assert_eq!(note.level, Level::Warn);
+        assert!(note.text.contains("rolled back"), "{}", note.text);
+        assert!(note.text.contains("gitui"), "{}", note.text);
+    }
+
+    #[test]
+    fn a_successful_rebase_is_noted_with_its_target() {
+        let mut app = app();
+        app.apply(JobResult::Rebased {
+            index: 0,
+            outcome: RebaseOutcome::Rebased {
+                onto: "origin/feature/login".into(),
+            },
+        });
+        let note = app.rows[0].note.as_ref().unwrap();
+        assert_eq!(note.level, Level::Info);
+        assert!(note.text.contains("origin/feature/login"), "{}", note.text);
+    }
+
+    /// Both rebases belong in the list that teaches the keys.
+    #[test]
+    fn the_menu_offers_both_rebases() {
+        let app = app();
+        let entries = app.menu_entries(0);
+        let upstream = entries.iter().find(|e| e.key == Key::Char('b')).unwrap();
+        let default = entries.iter().find(|e| e.key == Key::Char('B')).unwrap();
+        assert!(upstream.label.contains("upstream"), "{}", upstream.label);
+        assert!(default.label.contains("default"), "{}", default.label);
     }
 
     #[test]

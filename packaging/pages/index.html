@@ -143,6 +143,7 @@ unpushed -T               # plain table instead of the interface</code></pre>
   <tr><td><code>g</code></td><td>open GitUI in the repository</td></tr>
   <tr><td><code>Space</code></td><td>mark a row</td></tr>
   <tr><td><code>p</code></td><td>push the selected repository</td></tr>
+  <tr><td><code>b</code> / <code>B</code></td><td>rebase onto the upstream / onto the default branch</td></tr>
   <tr><td><code>A</code> / <code>P</code></td><td>push every visible / marked repository</td></tr>
   <tr><td><code>f</code> / <code>F</code></td><td>fetch selected / all visible</td></tr>
   <tr><td><code>/</code></td><td>filter by branch or name</td></tr>
@@ -170,6 +171,12 @@ moment you reach for a key. <code>--refresh 0</code> turns it off.</p>
 <p>While a repository is being fetched, read or pushed, its row shows a spinner
 and says what it is doing, and every key that would touch that repository is
 refused until it settles.</p>
+
+<p>Push refuses when the branch is behind its upstream; <code>b</code> is the way
+out — it fetches, rebases onto <code>origin/&lt;branch&gt;</code>, and the push
+then goes through. <code>B</code> rebases onto the default branch instead, for
+bringing a topic branch up to the mainline. Both refuse rather than improvise,
+and a conflict is rolled back so the working tree is left as it was found.</p>
 
 <p>Push fetches the repository first, refuses when the branch is behind
 <code>origin/&lt;branch&gt;</code> rather than forcing, and uses an explicit refspec

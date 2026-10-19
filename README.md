@@ -94,6 +94,8 @@ scanned.
 | `g` | open GitUI in the repository |
 | `Space` | mark a row |
 | `p` | push the selected repository |
+| `b` | rebase onto the upstream — what clears a refused push |
+| `B` | rebase onto the remote's default branch |
 | `A` | push every **visible** repository (asks first) |
 | `P` | push every **marked** repository (asks first) |
 | `f` / `F` | fetch (selected / all visible) |
@@ -164,6 +166,21 @@ Push is deliberate about three things:
 - **It uses an explicit refspec** (`refs/heads/B:refs/heads/B`), so a missing or
   wrong upstream cannot send commits to the wrong remote branch. A branch that
   does not exist on the remote is created, with the upstream set.
+
+## Rebasing
+
+Push refuses when the branch is behind its upstream. `b` is the way out: it
+fetches, rebases onto `origin/<branch>`, and the push then goes through.
+
+`B` rebases onto the remote's default branch instead — bringing a topic branch
+up to the mainline. Afterwards the branch has diverged from its own upstream,
+and reconciling that needs a force push, which this tool does not do; the row
+says so and points at gitui.
+
+Both refuse rather than improvise: a dirty working tree, a detached HEAD or a
+rebase already under way all stop them. On conflict the rebase is aborted, so
+the working tree is left exactly as it was found — the row says what it
+conflicted with and leaves the resolving to an editor.
 
 Interactive prompts are suppressed (`GIT_TERMINAL_PROMPT=0`,
 `ssh -o BatchMode=yes`): several pushes run at once, and a background job cannot

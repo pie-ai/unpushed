@@ -266,6 +266,20 @@ fn execute(job: Job, repos: &[Repo]) -> Vec<JobResult> {
             }
             results
         }
+        Job::Rebase { index, onto } => {
+            let outcome = crate::git::rebase(&repo.path, onto);
+            let rebased = outcome.is_success();
+            let mut results = vec![JobResult::Rebased { index, outcome }];
+            // A rebase moves HEAD, so the row's numbers are stale the moment
+            // it finishes.
+            if rebased {
+                results.push(JobResult::Scanned {
+                    index,
+                    outcome: Box::new(scan::scan_one(repo)),
+                });
+            }
+            results
+        }
         Job::Commits(index) => vec![JobResult::Commits {
             index,
             result: crate::commits::unpushed(&repo.path).map_err(|e| e.message().to_string()),
@@ -299,6 +313,7 @@ fn index_of(job: &Job) -> usize {
         Job::Scan(index)
         | Job::Fetch(index)
         | Job::Push { index, .. }
+        | Job::Rebase { index, .. }
         | Job::Commits(index)
         | Job::Diff { index, .. } => *index,
     }
