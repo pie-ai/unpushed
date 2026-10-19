@@ -44,7 +44,7 @@ fn main() -> ExitCode {
     }
 
     let base = args.dir.display().to_string();
-    if let Err(err) = tui::run(base, repos, args.threads.get()) {
+    if let Err(err) = tui::run(base, repos, args.threads.get(), args.refresh) {
         eprintln!("unpushed: {err}");
         return ExitCode::FAILURE;
     }

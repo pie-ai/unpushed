@@ -18,8 +18,22 @@ While the version is below 1.0, breaking changes may land in minor releases.
   doing, and is dimmed. Pushing takes seconds, and until now the only sign of it
   was a status character that did not move.
 
+- The list refreshes itself every few seconds, so changes made in another
+  window appear without pressing a key. Background refreshes are silent: no
+  spinner, no lock, busy rows skipped. `--refresh SECONDS` tunes the interval,
+  `0` turns it off.
+
 ### Fixed
 
+- `r` and `R` now re-read every repository, not only the visible ones. The
+  default view hides repositories with nothing to do, so one that had since
+  become dirty could never reappear. Pushing stays scoped to the visible rows.
+- The cursor stays on the repository you selected when a refresh reorders the
+  list around it, instead of sliding onto a different one.
+- A repository without an `origin` remote no longer reports a fetch error. Its
+  row showed `fetch: and the repository exists.` — the tail of git's four-line
+  complaint, read as a sentence on its own. Error text now keeps git's first,
+  informative line.
 - A row no longer looks idle while a fetch is still running. Startup schedules a
   scan *and* a fetch for every repository; the scan finishes first, and a single
   activity field let it clear the fetch state too. Each kind of work is now

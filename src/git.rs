@@ -36,8 +36,19 @@ impl PushOutcome {
 }
 
 /// Runs `git fetch origin` for one repository.
+///
+/// A repository without an `origin` remote is not an error: there is simply
+/// nothing to fetch, and the row already says so with "no upstream". Reporting
+/// git's four-line complaint on every such row would be noise.
 pub fn fetch(path: &Path) -> Result<(), String> {
-    run(path, &["fetch", "--quiet", "origin"]).map(|_| ())
+    match run(path, &["remote", "get-url", "origin"]) {
+        Ok(_) => run(path, &["fetch", "--quiet", "origin"]).map(|_| ()),
+        // "No such remote" is the benign case. Anything else — not a
+        // repository, unreadable directory — is a real failure and must stay
+        // one, or a broken checkout would masquerade as a healthy one.
+        Err(err) if err.contains("No such remote") => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// Fetches, verifies the push is safe, then pushes.
@@ -152,14 +163,26 @@ fn interpret(output: Output) -> Result<String, String> {
         stderr.trim()
     };
 
-    // git is verbose on failure; the last meaningful line is what the user
-    // needs in a single table row.
-    let message = detail
+    // git is verbose on failure and the useful sentence comes first; its later
+    // lines are advice that reads as nonsense on its own ("and the repository
+    // exists."). Prefer the first `fatal:`/`error:` line, then the first line
+    // of any kind.
+    let lines: Vec<&str> = detail
         .lines()
         .map(str::trim)
-        .rfind(|line| !line.is_empty() && !line.starts_with("remote:"))
-        .unwrap_or("unknown error")
-        .to_string();
+        .filter(|line| !line.is_empty() && !line.starts_with("remote:"))
+        .collect();
+    let message = lines
+        .iter()
+        .find(|line| line.starts_with("fatal:") || line.starts_with("error:"))
+        .or_else(|| lines.first())
+        .map(|line| {
+            line.trim_start_matches("fatal:")
+                .trim_start_matches("error:")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_else(|| "unknown error".to_string());
 
     Err(message)
 }
@@ -359,6 +382,36 @@ mod tests {
         );
         let already = "ssh -o BatchMode=yes";
         assert!(already.contains("BatchMode"));
+    }
+
+    /// A repository with no remote is a normal state, not a failed fetch.
+    #[test]
+    fn fetching_a_repository_without_a_remote_is_not_an_error() {
+        let fx = Fixture::new("no-remote");
+        let work = fx.0.join("solo");
+        std::fs::create_dir_all(&work).unwrap();
+        fx.git(&work, &["init", "-q", "-b", "main"]);
+        assert_eq!(fetch(&work), Ok(()));
+    }
+
+    /// git's advice lines read as nonsense on their own; the first line is the
+    /// one that says what happened.
+    #[test]
+    fn error_text_keeps_the_informative_line() {
+        let fx = Fixture::new("badremote");
+        let work = fx.clone("demo");
+        fx.git(
+            &work,
+            &["remote", "set-url", "origin", "/nonexistent/remote.git"],
+        );
+        let err = fetch(&work).unwrap_err();
+        assert!(
+            err.contains("does not appear to be a git repository")
+                || err.contains("not a git repository"),
+            "unhelpful message: {err}"
+        );
+        assert!(!err.starts_with("fatal:"), "prefix stripped: {err}");
+        assert!(!err.contains("and the repository exists"), "{err}");
     }
 
     #[test]

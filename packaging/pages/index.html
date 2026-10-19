@@ -144,6 +144,11 @@ unpushed -T               # plain table instead of the interface</code></pre>
   <tr><td><code>q</code></td><td>quit</td></tr>
 </table>
 
+<p>The list keeps itself current: every few seconds every repository is read
+again, so a file you change in another window shows up on its own. Background
+refreshes show no spinner and lock nothing — a row must never be busy at the
+moment you reach for a key. <code>--refresh 0</code> turns it off.</p>
+
 <p>While a repository is being fetched, read or pushed, its row shows a spinner
 and says what it is doing, and every key that would touch that repository is
 refused until it settles.</p>

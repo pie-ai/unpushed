@@ -68,6 +68,7 @@ unpushed -T               # plain table instead of the interface
 | `-T`, `--table` | print a table instead of the interface |
 | `-a`, `--all` | also show repositories with nothing to do (table only) |
 | `-j`, `--threads N` | parallel jobs (default 8) |
+| `-R`, `--refresh SECONDS` | background refresh interval, `0` turns it off (default 5) |
 | `-t`, `--timing` | print discovery and scan duration (table only) |
 | `-V`, `--version` | print version |
 | `-h`, `--help` | usage |
@@ -102,12 +103,25 @@ until it settles — a fetch in the middle of a push would move the refs out fro
 under it. Moving the cursor and marking rows stay available, as do all other
 repositories.
 
-## What it does on start
+## What it does on start, and while it runs
 
-The local scan finishes in well under a second — 47 checkouts took 0.7s across
-eight threads in testing. A fetch for every repository then runs in the
-background and each row is re-read as its fetch lands, so the numbers update
-underneath you rather than being stale until you ask.
+The local scan finishes in well under a second — 47 checkouts take around 200 ms
+across eight threads once the filesystem cache is warm. A fetch for every
+repository then runs in the background and each row is re-read as its fetch
+lands, so the numbers update underneath you rather than being stale until you
+ask.
+
+From then on the list keeps itself current: every few seconds every repository
+is read again, so a file you change in another window shows up on its own. This
+costs nothing noticeable and is deliberately invisible — background refreshes
+show no spinner and lock nothing, because a row must never be busy at the moment
+you reach for a key. Repositories that are already working are skipped, and the
+cursor stays on the repository you had selected even when the list reorders
+around it. `--refresh 0` turns it off.
+
+`r` and `R` re-read **every** repository, including those the current view
+hides. Pushing (`A`) stays scoped to what you can see: read everything, write
+only what is in front of you.
 
 ## Pushing
 

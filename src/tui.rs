@@ -25,7 +25,7 @@ use crate::ui;
 /// results arriving from background work appear promptly.
 const TICK: Duration = Duration::from_millis(100);
 
-pub fn run(base: String, repos: Vec<Repo>, threads: usize) -> io::Result<()> {
+pub fn run(base: String, repos: Vec<Repo>, threads: usize, refresh_secs: u64) -> io::Result<()> {
     let repos = Arc::new(repos);
     let mut app = App::new(base, (*repos).clone());
 
@@ -37,7 +37,8 @@ pub fn run(base: String, repos: Vec<Repo>, threads: usize) -> io::Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let outcome = event_loop(&mut terminal, &mut app, &pool, &results_rx, &repos);
+    let refresh = (refresh_secs > 0).then(|| Duration::from_secs(refresh_secs));
+    let outcome = event_loop(&mut terminal, &mut app, &pool, &results_rx, &repos, refresh);
     ratatui::restore();
     outcome
 }
@@ -48,8 +49,10 @@ fn event_loop(
     pool: &Pool,
     results: &Receiver<JobResult>,
     repos: &[Repo],
+    refresh: Option<Duration>,
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
+    let mut last_refresh = Instant::now();
 
     loop {
         while let Ok(result) = results.try_recv() {
@@ -63,6 +66,20 @@ fn event_loop(
         if last_tick.elapsed() >= TICK {
             app.tick();
             last_tick = Instant::now();
+        }
+
+        // Background refresh. Skipped while the pool still has work queued, so
+        // a slow scan cannot pile refreshes on top of each other; the timer
+        // restarts either way, which spaces them out rather than catching up.
+        if let Some(every) = refresh {
+            if last_refresh.elapsed() >= every {
+                if pool.is_idle() {
+                    for job in app.refresh_jobs() {
+                        pool.submit(job);
+                    }
+                }
+                last_refresh = Instant::now();
+            }
         }
 
         terminal.draw(|frame| ui::draw(frame, app))?;
@@ -173,6 +190,12 @@ impl Pool {
             .collect();
 
         Pool { inner, workers }
+    }
+
+    /// Whether nothing is waiting to be picked up. Used to hold back a
+    /// background refresh rather than queueing work behind a slow one.
+    fn is_idle(&self) -> bool {
+        self.inner.queue.lock().unwrap().is_empty()
     }
 
     fn submit(&self, job: Job) {

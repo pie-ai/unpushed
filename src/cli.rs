@@ -41,6 +41,10 @@ pub struct Cli {
     #[arg(short = 'j', long, default_value = "8", value_name = "N")]
     pub threads: NonZeroUsize,
 
+    /// Seconds between background refreshes; 0 turns them off
+    #[arg(short = 'R', long, default_value = "5", value_name = "SECONDS")]
+    pub refresh: u64,
+
     /// Print discovery and scan duration (table output only)
     #[arg(short, long)]
     pub timing: bool,

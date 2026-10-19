@@ -282,8 +282,24 @@ impl App {
         summary
     }
 
+    /// Moves the cursor back onto `anchor` after the visible set changed.
+    ///
+    /// Without this a background refresh could slide a row out from under the
+    /// cursor — you line up a push, a repository two lines above turns clean
+    /// and disappears, and the key lands on a different repository.
+    fn restore_cursor(&mut self, anchor: Option<usize>) {
+        if let Some(anchor) = anchor {
+            if let Some(position) = self.visible().iter().position(|&index| index == anchor) {
+                self.cursor = position;
+                return;
+            }
+        }
+        self.clamp_cursor();
+    }
+
     /// Feeds the result of background work back into the state.
     pub fn apply(&mut self, result: JobResult) {
+        let anchor = self.selected();
         match result {
             JobResult::Scanned { index, outcome } => {
                 if let Some(row) = self.rows.get_mut(index) {
@@ -317,7 +333,7 @@ impl App {
                 }
             }
         }
-        self.clamp_cursor();
+        self.restore_cursor(anchor);
     }
 
     /// Marks a row as busy so the UI shows it and a second keypress is ignored.
@@ -557,21 +573,36 @@ impl App {
         }
     }
 
-    /// Indices of visible rows that are free to take work, for the bulk keys.
-    /// Busy rows are skipped rather than failing the whole action.
-    fn idle_visible(&self) -> (Vec<usize>, usize) {
-        let visible = self.visible();
-        let total = visible.len();
-        let idle: Vec<usize> = visible
-            .into_iter()
+    /// Scan jobs for a background refresh.
+    ///
+    /// Deliberately **not** passed through `begin`: these rows are not marked
+    /// busy, so no spinner flashes every few seconds and nothing is locked
+    /// while you are about to press a key. Rows that are already working are
+    /// left alone — re-reading a repository mid-push is wasted effort.
+    pub fn refresh_jobs(&self) -> Vec<Job> {
+        (0..self.rows.len())
+            .filter(|&index| self.require_idle(index).is_ok())
+            .map(Job::Scan)
+            .collect()
+    }
+
+    /// Indices that are free to take work, for the bulk keys.
+    ///
+    /// Reading covers **every** row, not just the visible ones. The default
+    /// view hides repositories with nothing to do; scoping a refresh to what is
+    /// on screen would mean a repository that has since become dirty could
+    /// never reappear. Writing stays scoped to what you can see — that is what
+    /// `A` is for.
+    fn idle_rows(&self) -> (Vec<usize>, usize) {
+        let idle: Vec<usize> = (0..self.rows.len())
             .filter(|&index| self.require_idle(index).is_ok())
             .collect();
-        let skipped = total - idle.len();
+        let skipped = self.rows.len() - idle.len();
         (idle, skipped)
     }
 
     fn start_bulk(&mut self, make: fn(usize) -> Job, what: &str) -> Action {
-        let (targets, skipped) = self.idle_visible();
+        let (targets, skipped) = self.idle_rows();
         if targets.is_empty() {
             return self.warn(&format!("No rows available to {what}."));
         }
@@ -1075,8 +1106,7 @@ mod tests {
         let mut app = app();
         app.rows[0].set_busy(Activity::Pushing, true);
         match app.on_key(Key::Char('F')) {
-            // Two rows are visible; the busy one is left out.
-            Action::Start(jobs) => assert_eq!(jobs, vec![Job::Fetch(2)]),
+            Action::Start(jobs) => assert_eq!(jobs, vec![Job::Fetch(1), Job::Fetch(2)]),
             other => panic!("expected Start, got {other:?}"),
         }
         assert!(app
@@ -1090,8 +1120,9 @@ mod tests {
     #[test]
     fn bulk_action_with_nothing_available_says_so() {
         let mut app = app();
-        app.rows[0].set_busy(Activity::Pushing, true);
-        app.rows[2].set_busy(Activity::Pushing, true);
+        for row in &mut app.rows {
+            row.set_busy(Activity::Pushing, true);
+        }
         assert_eq!(app.on_key(Key::Char('R')), Action::None);
         assert!(app
             .message
@@ -1099,6 +1130,67 @@ mod tests {
             .unwrap()
             .text
             .contains("No rows available"));
+    }
+
+    /// The default view hides repositories with nothing to do. If a refresh
+    /// only covered what is on screen, one that has since become dirty could
+    /// never come back into view.
+    #[test]
+    fn refreshing_covers_rows_the_view_is_hiding() {
+        let mut app = app();
+        assert_eq!(app.visible(), vec![0, 2], "row 1 is clean and hidden");
+
+        match app.on_key(Key::Char('R')) {
+            Action::Start(jobs) => {
+                assert_eq!(jobs, vec![Job::Scan(0), Job::Scan(1), Job::Scan(2)]);
+            }
+            other => panic!("expected Start, got {other:?}"),
+        }
+    }
+
+    /// Pushing stays scoped to what is on screen — that distinction is the
+    /// whole point of `A`.
+    #[test]
+    fn pushing_stays_scoped_to_the_visible_rows() {
+        let mut app = app();
+        app.on_key(Key::Char('A'));
+        match &app.mode {
+            Mode::Confirm(confirm) => {
+                assert_eq!(confirm.targets, vec!["backend-api", "api-gateway"]);
+            }
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_background_refresh_neither_locks_nor_marks_rows() {
+        let mut app = app();
+        app.rows[0].set_busy(Activity::Pushing, true);
+
+        let jobs = app.refresh_jobs();
+        assert_eq!(jobs, vec![Job::Scan(1), Job::Scan(2)], "busy row skipped");
+        assert_eq!(
+            app.rows[1].activity(),
+            Activity::Idle,
+            "no spinner for a background refresh"
+        );
+        assert!(app.require_idle(1).is_ok(), "and nothing is locked");
+    }
+
+    /// A refresh must not slide a row out from under the cursor.
+    #[test]
+    fn the_cursor_stays_on_the_same_repository_across_a_refresh() {
+        let mut app = app();
+        app.on_key(Key::Down);
+        assert_eq!(app.selected(), Some(2));
+
+        app.apply(JobResult::Scanned {
+            index: 0,
+            outcome: Box::new(status("backend-api", "feature/login", 0, false)),
+        });
+
+        assert_eq!(app.visible(), vec![2], "backend-api left the view");
+        assert_eq!(app.selected(), Some(2), "cursor still on api-gateway");
     }
 
     #[test]
