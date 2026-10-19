@@ -17,7 +17,9 @@ While the version is below 1.0, breaking changes may land in minor releases.
 - Both refuse rather than improvise: a dirty working tree, a detached HEAD or a
   rebase already under way all stop them. On conflict the rebase is aborted, so
   the working tree is left exactly as it was found, and the row says what it
-  conflicted with.
+  conflicted with. A rebase that breaks for some other reason — git with no
+  committer identity, say — is reported as the failure it is, rather than
+  sending you hunting for a conflict that is not there.
 
 ### Changed
 

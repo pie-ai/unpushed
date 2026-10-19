@@ -98,18 +98,37 @@ pub fn rebase(path: &Path, onto: Onto) -> RebaseOutcome {
 
     match run(path, &["rebase", &target]) {
         Ok(_) => RebaseOutcome::Rebased { onto: target },
-        Err(_) => {
-            // Leave nothing half-applied. If the abort itself fails the
-            // repository needs a human, and saying so is more use than a
-            // conflict message.
-            if run(path, &["rebase", "--abort"]).is_err() {
+        Err(err) => {
+            // A rebase fails two very different ways: it can stop on a
+            // conflict, or it can break for an unrelated reason — git with no
+            // committer identity configured, for one. Both leave rebase state
+            // behind, so the presence of that state says nothing. Ask for
+            // unmerged paths instead, which is the question actually being
+            // asked. Must happen before the abort clears them.
+            let conflicted = run(path, &["ls-files", "--unmerged"])
+                .map(|out| !out.trim().is_empty())
+                .unwrap_or(false);
+
+            // Leave nothing half-applied either way. If the abort itself
+            // fails the repository needs a human, and saying so is more use
+            // than any other message.
+            if rebase_in_progress(path) && run(path, &["rebase", "--abort"]).is_err() {
                 return RebaseOutcome::Failed(
-                    "rebase failed and could not be aborted — resolve by hand".to_string(),
+                    "rebase stopped and could not be aborted — resolve by hand".to_string(),
                 );
             }
-            RebaseOutcome::Conflicted { onto: target }
+
+            if conflicted {
+                RebaseOutcome::Conflicted { onto: target }
+            } else {
+                RebaseOutcome::Failed(err)
+            }
         }
     }
+}
+
+fn rebase_in_progress(path: &Path) -> bool {
+    path.join(".git/rebase-merge").exists() || path.join(".git/rebase-apply").exists()
 }
 
 /// Whether the divergence looks like the result of rebasing onto the default
@@ -131,7 +150,7 @@ fn rebased_onto_default(path: &Path, branch: &str) -> bool {
 
 fn ready_to_rebase(path: &Path) -> Result<(), String> {
     // A rebase left half-finished by something else must not be stacked on.
-    if path.join(".git/rebase-merge").exists() || path.join(".git/rebase-apply").exists() {
+    if rebase_in_progress(path) {
         return Err("a rebase is already in progress".to_string());
     }
     match run(path, &["symbolic-ref", "--quiet", "HEAD"]) {
@@ -404,6 +423,11 @@ mod tests {
                     work.to_str().unwrap(),
                 ],
             );
+            // `git rebase` is run by the code under test, without the
+            // environment these helpers set, so the identity has to live in
+            // the repository. CI runners have no global one.
+            self.git(&work, &["config", "user.name", "Ada"]);
+            self.git(&work, &["config", "user.email", "ada@example.com"]);
             work
         }
 
@@ -660,6 +684,43 @@ mod tests {
             "mine\n",
             "the working tree was not restored"
         );
+    }
+
+    /// A rebase that cannot start is not a conflict, and saying so would send
+    /// the user hunting for one that is not there. CI runners have no git
+    /// identity, which is exactly how this surfaced.
+    #[test]
+    fn a_rebase_that_cannot_start_is_not_reported_as_a_conflict() {
+        let fx = Fixture::new("rebase-noident");
+        let work = fx.clone("demo");
+        // Undo what the fixture set up, leaving git without a committer.
+        fx.git(&work, &["config", "--unset", "user.name"]);
+        fx.git(&work, &["config", "--unset", "user.email"]);
+        fx.git(&work, &["config", "user.useConfigOnly", "true"]);
+
+        let other = fx.clone("demo-other");
+        let remote = fx.0.join("demo.git");
+        fx.git(
+            &other,
+            &["remote", "set-url", "origin", remote.to_str().unwrap()],
+        );
+        fx.git(&other, &["fetch", "-q", "origin"]);
+        fx.git(&other, &["reset", "-q", "--hard", "origin/main"]);
+        fx.commit(&other, "theirs.txt");
+        fx.git(&other, &["push", "-q", "origin", "main"]);
+
+        // A local commit still needs an identity, so make one with the
+        // helper's environment before taking the identity away for the rebase.
+        fx.commit(&work, "mine.txt");
+        fx.git(&work, &["config", "user.useConfigOnly", "true"]);
+
+        match rebase(&work, Onto::Upstream) {
+            RebaseOutcome::Failed(_) | RebaseOutcome::Rebased { .. } => {}
+            other @ RebaseOutcome::Conflicted { .. } => {
+                panic!("a missing identity was reported as {other:?}")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
