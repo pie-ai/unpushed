@@ -49,7 +49,13 @@ On a Raspberry Pi, apt picks `arm64` on a 64-bit OS and `armhf` on a 32-bit one.
 The `armhf` build targets ARMv7, so it covers the Pi 2 and later; the Pi 1 and
 Zero are ARMv6 and are not supported.
 
-**From source** — needs Rust 1.88 or newer:
+**Cargo** — needs Rust 1.88 or newer:
+
+```bash
+cargo install unpushed
+```
+
+Or straight from the repository, for an unreleased state:
 
 ```bash
 cargo install --git https://github.com/pie-ai/unpushed

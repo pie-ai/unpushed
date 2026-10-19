@@ -1,5 +1,10 @@
 //! Overview of unpushed commits across many git checkouts.
 //!
+//! **This is not a stable API.** The crate exists to serve the `unpushed`
+//! binary and its integration tests; it is published only so that
+//! `cargo install unpushed` works. Items may change or disappear in any
+//! release, including patch releases. Depend on the command, not on this.
+//!
 //! The crate is split so the data path and the interface stay separable:
 //!
 //! - [`model`] — the status model, including the states that are easy to

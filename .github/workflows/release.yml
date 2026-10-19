@@ -283,6 +283,25 @@ jobs:
       - id: deploy
         uses: actions/deploy-pages@v4
 
+  crates:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Publishing is irreversible — a version can be yanked but never
+      # replaced — so the packaged crate is built and compiled from its own
+      # tarball first. This also catches a build script that writes outside
+      # OUT_DIR, which `cargo publish` refuses.
+      - run: cargo package
+
+      - run: cargo publish --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   homebrew:
     needs: release
     if: startsWith(github.ref, 'refs/tags/v')

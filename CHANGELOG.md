@@ -8,6 +8,12 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+### Added
+
+- Published to crates.io, so `cargo install unpushed` works. The library target
+  comes along with it but carries no stability promise — it exists to serve the
+  binary and its tests, and says so.
+
 ### Fixed
 
 - The apt repository now indexes every architecture found in its pool instead

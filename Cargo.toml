@@ -9,9 +9,22 @@ repository = "https://github.com/pie-ai/unpushed"
 readme = "README.md"
 keywords = ["git", "tui", "cli", "monorepo"]
 categories = ["command-line-utilities", "development-tools"]
-# Not published to crates.io: src/lib.rs is an implementation detail, not a
-# public API this project intends to keep stable.
-publish = false
+# Published so `cargo install unpushed` works. The library target comes along
+# for the ride; see the note at the top of src/lib.rs — it carries no stability
+# promise.
+# Everything the binary needs at build time, nothing else: no release
+# tarballs, no CI config, no packaging templates.
+include = [
+    "src/**/*.rs",
+    "build.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "/README.md",
+    "CHANGELOG.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "THIRD-PARTY-LICENSES.md",
+]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

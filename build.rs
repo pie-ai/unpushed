@@ -1,10 +1,15 @@
 //! Generates the man page and shell completions from the command line
 //! definition, so they cannot drift from `--help`.
 //!
-//! Output goes into `man/` and `completions/` next to the manifest rather than
-//! `OUT_DIR`: the Debian package and the release tarballs reference those paths
-//! directly, and digging them out of a target directory would buy nothing. Both
-//! directories are generated artefacts and are git-ignored.
+//! Output goes to `OUT_DIR`, and additionally to `man/` and `completions/` next
+//! to the manifest, because the Debian package and the release tarballs
+//! reference those paths directly. Both directories are generated artefacts and
+//! are git-ignored.
+//!
+//! Writing beside the manifest is skipped when the manifest directory is not
+//! writable, and when building from a packaged crate — `cargo publish` verifies
+//! that a build script leaves the source tree alone, and rightly rejects one
+//! that does not.
 
 use std::fs;
 use std::io;
@@ -21,9 +26,32 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=src/cli.rs");
     println!("cargo:rerun-if-changed=build.rs");
 
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("set by cargo"));
+    generate(&out_dir)?;
+
+    // Also beside the manifest, where packaging picks them up — but never from
+    // a packaged crate, whose source tree must stay untouched. A read-only
+    // checkout is not a reason to fail either: OUT_DIR already has the copies.
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("set by cargo"));
-    let man_dir = root.join("man");
-    let completions_dir = root.join("completions");
+    if !is_packaged_build(&root) {
+        let _ = generate(&root);
+    }
+
+    Ok(())
+}
+
+/// True when building from an unpacked `.crate`, which cargo stages under
+/// `target/package/` during `cargo publish` and in the registry cache.
+fn is_packaged_build(root: &Path) -> bool {
+    root.join(".cargo_vcs_info.json").exists()
+        || root
+            .components()
+            .any(|c| c.as_os_str() == "package" || c.as_os_str() == "registry")
+}
+
+fn generate(dir: &Path) -> io::Result<()> {
+    let man_dir = dir.join("man");
+    let completions_dir = dir.join("completions");
     fs::create_dir_all(&man_dir)?;
     fs::create_dir_all(&completions_dir)?;
 
