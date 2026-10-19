@@ -1,0 +1,72 @@
+name: BSD
+
+# Deliberately not on every push: each of these boots a BSD under emulation and
+# compiles the whole dependency tree, which takes minutes rather than seconds.
+# Portability changes rarely, so checking it on demand and before a release is
+# the right cadence. This workflow does not gate releases — it reports.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # Three jobs rather than a matrix: `uses:` cannot be templated from one, and
+  # each BSD needs its own package manager, package names and PATH anyway.
+  netbsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: "11.0"
+          usesh: true
+          # `git` is not optional: the test suite builds real repositories,
+          # and fetch and push run as git subprocesses.
+          prepare: |
+            /usr/sbin/pkg_add -u || true
+            pkgin -y install rust-bin git
+          run: |
+            export PATH=/usr/pkg/bin:$PATH
+            rustc --version && cargo --version && git --version
+            cargo test
+            cargo build
+            ./target/debug/unpushed --version
+
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"   # the current stable line; 15.x is newer but less settled
+          usesh: true
+          prepare: |
+            pkg install -y rust git
+          run: |
+            export PATH=/usr/local/bin:$PATH
+            rustc --version && cargo --version && git --version
+            cargo test
+            cargo build
+            ./target/debug/unpushed --version
+
+  openbsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: vmactions/openbsd-vm@v1
+        with:
+          # OpenBSD supports only its two newest releases, and the package
+          # mirrors for older ones go away — so track what the action defaults to.
+          release: "7.9"
+          usesh: true
+          prepare: |
+            pkg_add -I rust git
+          run: |
+            export PATH=/usr/local/bin:$PATH
+            rustc --version && cargo --version && git --version
+            cargo test
+            cargo build
+            ./target/debug/unpushed --version
