@@ -49,6 +49,17 @@ On a Raspberry Pi, apt picks `arm64` on a 64-bit OS and `armhf` on a 32-bit one.
 The `armhf` build targets ARMv7, so it covers the Pi 2 and later; the Pi 1 and
 Zero are ARMv6 and are not supported.
 
+**BSD** — NetBSD, FreeBSD and OpenBSD build and pass the full test suite from
+source; install Rust and git from your package manager, then:
+
+```sh
+cargo install unpushed
+```
+
+There are no prebuilt BSD binaries, and no package in pkgsrc or ports. The
+[BSD workflow](.github/workflows/bsd.yml) runs the suite on all three before
+every release — see the table under *Development* for the versions covered.
+
 **Cargo** — needs Rust 1.88 or newer:
 
 ```bash
@@ -209,6 +220,20 @@ default view.
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
+
+Tested on every push against glibc (x86_64), musl (x86_64) and macOS
+(arm64). The musl run matters because the published Linux binaries are
+statically linked against it — what Debian and Raspberry Pi users install.
+
+The BSDs are checked on demand and before each release, under emulation:
+
+| | Rust | Result |
+|---|---|---|
+| NetBSD 11.0 | 1.96.1 (pkgsrc `rust-bin`) | all tests pass |
+| FreeBSD 14.3 | 1.99.0 (ports `rust`) | all tests pass |
+| OpenBSD 7.9 | 1.94.1 (`rust`) | all tests pass |
+
+No platform-specific code was needed for any of them.
 
 The scan and push tests build real repositories with `git` in a temporary
 directory, including a local bare remote, so pushing is exercised for real

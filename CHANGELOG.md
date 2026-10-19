@@ -8,6 +8,13 @@ While the version is below 1.0, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+### Added
+
+- NetBSD, FreeBSD and OpenBSD are checked before every release: each builds and
+  passes the full test suite from source, under emulation, with no
+  platform-specific code. `cargo install unpushed` is the way in on all three —
+  there are no prebuilt BSD binaries.
+
 ## [0.4.0] - 2026-10-19
 
 ### Added
